@@ -3,7 +3,7 @@ const express = require('express');
 const twilio = require('twilio');
 const { createClient } = require('@supabase/supabase-js');
 const { OpenAI } = require('openai');
-const chrono = require('chrono-node'); // Kept as per your request
+const chrono = require('chrono-node');
 const app = express();
 
 app.use(express.urlencoded({ extended: false }));
@@ -114,28 +114,31 @@ const fetchStoreInfo = async (storeId) => {
 // Create client record
 const createClientRecord = async (phoneNumber, name) => {
   try {
+    // Insert into global_clients
     const { data: globalClient, error: globalError } = await supabase
       .schema('clients')
       .from('global_clients')
       .insert({
         client_name: name,
-        client_ph: phoneNumber.slice(3), // Remove +65
+        client_ph: parseInt(phoneNumber.slice(3), 10), // Remove +65 and convert to int
       })
       .select('global_client_id')
       .single();
     if (globalError) throw globalError;
 
+    // Insert into clients
     const { data: client, error: clientError } = await supabase
       .schema('clients')
       .from('clients')
       .insert({
         global_client_id: globalClient.global_client_id,
+        store_id: null
       })
       .select('client_id')
       .single();
     if (clientError) throw clientError;
 
-    return client.client_id;
+    return { clientId: client.client_id, globalClientId: globalClient.global_client_id };
   } catch (error) {
     console.error('Error creating client record:', error.message);
     throw error;
@@ -237,15 +240,13 @@ async function rephraseWithDeepSeek(message, name) {
 
 // Function to parse natural language date and time
 function parseDateTime(dateStr, timeStr) {
-  const now = new Date(); // Updated to use current date
+  const now = new Date();
   let dateTime;
 
   if (dateStr && timeStr) {
     const fullStr = `${dateStr} ${timeStr}`;
-    // Use chrono-node with English locale only to avoid Japanese locale issues
     dateTime = chrono.parseDate(fullStr, now, { forwardDate: true, timezone: 'Asia/Singapore', locale: 'en' });
     if (!dateTime || isNaN(dateTime.getTime())) {
-      // Fallback to basic parsing if chrono fails
       const today = now.toISOString().split('T')[0];
       dateTime = new Date(`${today}T${timeStr}:00+08:00`);
       if (isNaN(dateTime.getTime()) && dateStr) {
@@ -255,13 +256,12 @@ function parseDateTime(dateStr, timeStr) {
   } else if (dateStr) {
     dateTime = chrono.parseDate(dateStr, now, { forwardDate: true, timezone: 'Asia/Singapore', locale: 'en' });
     if (!dateTime || isNaN(dateTime.getTime())) {
-      // Handle relative dates
       if (dateStr.toLowerCase().includes('tomorrow')) dateTime = new Date(now.setDate(now.getDate() + 1));
       else if (dateStr.toLowerCase().includes('today')) dateTime = now;
       else dateTime = new Date(dateStr);
     }
     if (dateTime && !isNaN(dateTime.getTime())) {
-      dateTime.setHours(0, 0, 0, 0); // Default to midnight if no time
+      dateTime.setHours(0, 0, 0, 0);
     }
   } else if (timeStr) {
     dateTime = new Date(now);
@@ -276,7 +276,6 @@ function parseDateTime(dateStr, timeStr) {
     }
   }
   if (dateTime && !isNaN(dateTime.getTime())) {
-    // Ensure timezone is +08:00
     dateTime.setMinutes(dateTime.getMinutes() + dateTime.getTimezoneOffset() + 480);
     return dateTime;
   }
@@ -285,16 +284,14 @@ function parseDateTime(dateStr, timeStr) {
 
 // Function to check if the time slot is available and within operating hours
 async function checkAvailabilityAndHours(storeId, apptStart, apptEnd, serviceDuration) {
-  const MAX_APPOINTMENTS_PER_SLOT = 5; // Hardcoded max appointments per slot
+  const MAX_APPOINTMENTS_PER_SLOT = 5;
   const { store } = await fetchStoreInfo(storeId);
   const operatingHours = store.store_operating_hours;
   
-  // Get the day of the week for the appointment
   const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const apptDay = daysOfWeek[apptStart.getDay()];
   const storeHours = operatingHours[apptDay.toLowerCase()];
   
-  // Check if the store is closed
   if (storeHours.isClosed) {
     return {
       isAvailable: false,
@@ -303,7 +300,6 @@ async function checkAvailabilityAndHours(storeId, apptStart, apptEnd, serviceDur
     };
   }
 
-  // Parse store opening and closing times
   const [openHour, openMinute] = storeHours.open.split(':').map(Number);
   const [closeHour, closeMinute] = storeHours.close.split(':').map(Number);
   
@@ -312,7 +308,6 @@ async function checkAvailabilityAndHours(storeId, apptStart, apptEnd, serviceDur
   const storeCloseTime = new Date(apptStart);
   storeCloseTime.setHours(closeHour, closeMinute, 0, 0);
 
-  // Check if the appointment is within operating hours
   if (apptStart < storeOpenTime || apptEnd > storeCloseTime) {
     return {
       isAvailable: false,
@@ -321,7 +316,6 @@ async function checkAvailabilityAndHours(storeId, apptStart, apptEnd, serviceDur
     };
   }
 
-  // Check for overlapping appointments
   const { data: existingAppointments, error } = await supabase
     .schema('appointments')
     .from('appointments')
@@ -348,7 +342,7 @@ function suggestNextAvailableTime(storeId, requestedTime, serviceDuration, opera
   const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   let suggestedTime = new Date(requestedTime);
   let attempts = 0;
-  const maxAttempts = 7; // Try up to 7 days ahead
+  const maxAttempts = 7;
 
   while (attempts < maxAttempts) {
     const apptDay = daysOfWeek[suggestedTime.getDay()];
@@ -358,7 +352,6 @@ function suggestNextAvailableTime(storeId, requestedTime, serviceDuration, opera
       const [openHour, openMinute] = storeHours.open.split(':').map(Number);
       const [closeHour, closeMinute] = storeHours.close.split(':').map(Number);
       
-      // Start from opening time or requested time if later
       let nextTime = new Date(suggestedTime);
       nextTime.setHours(openHour, openMinute, 0, 0);
       if (nextTime < suggestedTime) {
@@ -368,11 +361,9 @@ function suggestNextAvailableTime(storeId, requestedTime, serviceDuration, opera
       const closeTime = new Date(suggestedTime);
       closeTime.setHours(closeHour, closeMinute, 0, 0);
 
-      // Increment by 30 minutes until a slot is found or we pass closing time
       while (nextTime < closeTime) {
         const apptEnd = new Date(nextTime.getTime() + serviceDuration * 60 * 1000);
         if (apptEnd <= closeTime) {
-          // Check if this slot is available (mock check since we can't call async here)
           return {
             date: nextTime.toLocaleDateString(),
             time: nextTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
@@ -382,13 +373,11 @@ function suggestNextAvailableTime(storeId, requestedTime, serviceDuration, opera
       }
     }
     
-    // Move to the next day
     suggestedTime.setDate(suggestedTime.getDate() + 1);
-    suggestedTime.setHours(0, 0, 0, 0); // Reset to start of day
+    suggestedTime.setHours(0, 0, 0, 0);
     attempts++;
   }
 
-  // If no slot is found within 7 days, suggest contacting support
   return null;
 }
 
@@ -401,6 +390,7 @@ async function classifyIntent(message) {
       - BOOK_APPOINTMENT (e.g., "I need to book an appointment", "I want a haircut", "I'd like to schedule a service")
       - CHANGE_APPOINTMENT (e.g., "I want to change my booking", "Can I reschedule")
       - STORE_INFO (e.g., "Can I get more details about a salon", "What are your hours", "operating hours for Idle", "address of Glamour Salon", "services at Idle")
+      - VIEW_APPOINTMENTS (e.g., "Can I see my upcoming appointments?", "What are my bookings?")
       - CONFIRM_APPOINTMENT (e.g., "YES")
       - CANCEL_APPOINTMENT (e.g., "NO")
       - PACKAGE_INQUIRY (e.g., "Can you tell me about my package?", "Is my package still active?", "How many sessions are left?", "Package details")
@@ -448,7 +438,6 @@ async function classifyIntent(message) {
     return JSON.parse(responseContent);
   } catch (error) {
     console.error('DeepSeek intent classification error:', error.message);
-    // Fallback to keyword-based intent classification
     const lowerMessage = message.toLowerCase();
     if (lowerMessage.includes('book') || lowerMessage.includes('appointment') || lowerMessage.includes('schedule') || lowerMessage.includes('service')) {
       return {
@@ -486,6 +475,17 @@ async function classifyIntent(message) {
           date: null,
           time: null,
           info_type: infoType
+        }
+      };
+    } else if (lowerMessage.includes('upcoming') || lowerMessage.includes('appointments') || lowerMessage.includes('bookings')) {
+      return {
+        intent: 'VIEW_APPOINTMENTS',
+        details: {
+          store_name: null,
+          service_name: null,
+          date: null,
+          time: null,
+          info_type: null
         }
       };
     } else if (lowerMessage.toUpperCase() === 'YES') {
@@ -549,18 +549,16 @@ async function classifyIntent(message) {
 
 // Webhook to handle customer replies
 app.post('/twilio-webhook', async (req, res) => {
-  console.log('Webhook received:', req.body); // Log the incoming request
+  console.log('Webhook received:', req.body);
   const reply = req.body.Body;
   const from = req.body.From.replace('whatsapp:', '');
   console.log(`Processing message from ${from}: ${reply}`);
   try {
-    // Hardcode remove +65 from incoming number for client_ph query
     let fromWithoutPrefix = from;
     if (from.startsWith('+65')) {
-      fromWithoutPrefix = from.slice(3); // Remove +65 to get 96460132
+      fromWithoutPrefix = from.slice(3);
     }
 
-    // Check if client exists
     let clientData = null;
     let clientLink = null;
     const { data: existingClient, error: clientError } = await supabase
@@ -570,37 +568,7 @@ app.post('/twilio-webhook', async (req, res) => {
       .eq('client_ph', fromWithoutPrefix)
       .single();
     
-    if (clientError || !existingClient) {
-      console.log(`No matching client data for ${fromWithoutPrefix}, creating new client.`);
-      // Create a new client record
-      const clientId = await createClientRecord(from, 'Unknown'); // Default name as 'Unknown'
-      // Fetch the newly created client data
-      const { data: newClient, error: newClientError } = await supabase
-        .schema('clients')
-        .from('global_clients')
-        .select('client_name, preferred_name, global_client_id, client_ph')
-        .eq('client_ph', fromWithoutPrefix)
-        .single();
-      if (newClientError || !newClient) {
-        console.error(`Failed to fetch newly created client for ${fromWithoutPrefix}: ${newClientError?.message}`);
-        res.status(500).send('Error creating new client.');
-        return;
-      }
-      clientData = newClient;
-
-      const { data: newClientLink, error: linkError } = await supabase
-        .schema('clients')
-        .from('clients')
-        .select('client_id')
-        .eq('global_client_id', clientData.global_client_id)
-        .single();
-      if (linkError || !newClientLink) {
-        console.error(`No client link found for global_client_id ${clientData.global_client_id}: ${linkError?.message}`);
-        res.status(500).send('Error linking new client.');
-        return;
-      }
-      clientLink = newClientLink;
-    } else {
+    if (!clientError && existingClient) {
       clientData = existingClient;
       const { data: existingClientLink, error: linkError } = await supabase
         .schema('clients')
@@ -617,24 +585,19 @@ app.post('/twilio-webhook', async (req, res) => {
     }
 
     let responseMessage;
-    const name = clientData.preferred_name || clientData.client_name;
+    let name = clientData ? (clientData.preferred_name || clientData.client_name || 'there') : 'there';
 
-    // Classify the customer's intent using DeepSeek
     const { intent, details } = await classifyIntent(reply);
 
-    // Check if we're in a conversation state
     if (conversationState.has(from)) {
       const state = conversationState.get(from);
       if (state.step === 'selectOption') {
-        // Handle store info sub-menu
         const { storeId, storeName } = state;
         const { store, services, packages } = await fetchStoreInfo(storeId);
 
         if (reply === '1') {
-          // Store Address
           responseMessage = `Address for ${storeName}: ${store.store_addressL1}`;
         } else if (reply === '2') {
-          // Operating Hours
           const hours = store.store_operating_hours;
           const formattedHours = Object.entries(hours)
             .map(([day, info]) => {
@@ -644,11 +607,9 @@ app.post('/twilio-webhook', async (req, res) => {
             .join('\n');
           responseMessage = `Operating Hours for ${storeName}:\n${formattedHours}`;
         } else if (reply === '3') {
-          // Services
           const serviceList = services.map(s => `${s.service_name}: $${s.price} (${s.service_duration} mins)`).join('\n');
           responseMessage = `Services at ${storeName}:\n${serviceList}`;
         } else if (reply === '4') {
-          // Packages
           const packageList = packages.map(p => {
             const startDate = new Date(p.package_start).toLocaleDateString();
             const endDate = new Date(p.package_end).toLocaleDateString();
@@ -658,11 +619,9 @@ app.post('/twilio-webhook', async (req, res) => {
         } else {
           responseMessage = `Please select an option:\n1. Store Address\n2. Operating Hours\n3. Services\n4. Packages`;
         }
-        conversationState.delete(from); // Reset state
+        conversationState.delete(from);
       } else if (state.step === 'book_appointment') {
-        // Handle booking flow - Store selection
         if (!state.storeName) {
-          // Waiting for store name
           if (details.store_name) {
             const { data: storeRecord } = await supabase
               .schema('store_management')
@@ -684,7 +643,6 @@ app.post('/twilio-webhook', async (req, res) => {
           }
         }
       } else if (state.step === 'book_appointment_service') {
-        // Handle booking flow - Service selection
         if (!state.serviceName) {
           const { data: services } = await supabase
             .schema('store_management')
@@ -693,7 +651,6 @@ app.post('/twilio-webhook', async (req, res) => {
             .eq('store_id', state.storeId);
           let serviceMatch = services.find(s => s.service_name.toLowerCase() === details.service_name?.toLowerCase());
           if (!serviceMatch && details.service_name) {
-            // Try to match informal terms or partial names
             const lowerServiceName = details.service_name.toLowerCase();
             const serviceSynonyms = {
               'cut': 'haircut',
@@ -715,7 +672,6 @@ app.post('/twilio-webhook', async (req, res) => {
           }
         }
       } else if (state.step === 'book_appointment_datetime') {
-        // Handle booking flow - Date and time selection
         if (!state.date || !state.time) {
           if (details.date || details.time) {
             const dateTime = parseDateTime(details.date, details.time);
@@ -723,7 +679,6 @@ app.post('/twilio-webhook', async (req, res) => {
               const apptStart = dateTime;
               const apptEnd = new Date(apptStart.getTime() + state.serviceDuration * 60 * 1000);
 
-              // Check availability and operating hours
               const availability = await checkAvailabilityAndHours(state.storeId, apptStart, apptEnd, state.serviceDuration);
               if (!availability.isAvailable) {
                 if (availability.reason === 'closed') {
@@ -740,24 +695,38 @@ app.post('/twilio-webhook', async (req, res) => {
                   responseMessage += ` I couldn’t find an available slot soon. Could you try a different day, or let me know when you’re free?`;
                 }
               } else {
-                // Slot is available, proceed with booking
-                const { data, error } = await supabase
-                  .schema('appointments')
-                  .from('appointments')
-                  .insert({
-                    store_id: state.storeId,
-                    assignment_id: 'b32e113a-0bdc-46ee-95ab-f7260abda24e',
-                    client_id: clientLink.client_id,
-                    service_id: state.serviceId,
-                    appt_start: apptStart.toISOString(),
-                    appt_end: apptEnd.toISOString(),
-                    prepayment_amt: 50
-                  })
-                  .select();
-                if (error) throw error;
+                if (!clientData) {
+                  state.step = 'collect_client_details';
+                  state.from = from;
+                  state.appointmentDetails = {
+                    storeId: state.storeId,
+                    storeName: state.storeName,
+                    serviceId: state.serviceId,
+                    serviceName: state.serviceName,
+                    apptStart: apptStart.toISOString(),
+                    apptEnd: apptEnd.toISOString()
+                  };
+                  conversationState.set(from, state);
+                  responseMessage = `To confirm your booking, I’ll need a few details. Could you please share your name and phone number (e.g., John, 96460132)?`;
+                } else {
+                  const { data, error } = await supabase
+                    .schema('appointments')
+                    .from('appointments')
+                    .insert({
+                      store_id: state.storeId,
+                      assignment_id: 'b32e113a-0bdc-46ee-95ab-f7260abda24e',
+                      client_id: clientLink.client_id,
+                      service_id: state.serviceId,
+                      appt_start: apptStart.toISOString(),
+                      appt_end: apptEnd.toISOString(),
+                      prepayment_amt: 50
+                    })
+                    .select();
+                  if (error) throw error;
 
-                responseMessage = `Great news, ${name}! Your ${state.serviceName} at ${state.storeName} is booked for ${apptStart.toLocaleDateString()} at ${apptStart.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}. Can’t wait to see you!`;
-                conversationState.delete(from); // Reset state
+                  responseMessage = `Great news, ${name}! Your ${state.serviceName} at ${state.storeName} is booked for ${apptStart.toLocaleDateString()} at ${apptStart.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}. Can’t wait to see you!`;
+                  conversationState.delete(from);
+                }
               }
             } else {
               responseMessage = `Hmm, I didn’t quite catch that date or time. Could you please try again with something like 'tomorrow at 2 PM' or 'this Friday at 10 am'? I’m here to help!`;
@@ -766,10 +735,39 @@ app.post('/twilio-webhook', async (req, res) => {
             responseMessage = `When would you like your ${state.serviceName} at ${state.storeName}? Feel free to say something like 'tomorrow at 2 PM' or 'this Friday at 10 am'—I’ll handle the rest!`;
           }
         }
+      } else if (state.step === 'collect_client_details') {
+        const nameMatch = reply.match(/([a-zA-Z\s]+),\s*(\d+)/);
+        if (nameMatch) {
+          const clientName = nameMatch[1].trim();
+          const phoneNumber = nameMatch[2].trim();
+          if (phoneNumber !== fromWithoutPrefix) {
+            responseMessage = `The phone number you provided (${phoneNumber}) doesn’t match the number you’re messaging from (${fromWithoutPrefix}). Please use the same number or let me know if this is intentional.`;
+          } else {
+            const { clientId } = await createClientRecord(from, clientName);
+            const { data, error } = await supabase
+              .schema('appointments')
+              .from('appointments')
+              .insert({
+                store_id: state.appointmentDetails.storeId,
+                assignment_id: 'b32e113a-0bdc-46ee-95ab-f7260abda24e',
+                client_id: clientId,
+                service_id: state.appointmentDetails.serviceId,
+                appt_start: state.appointmentDetails.apptStart,
+                appt_end: state.appointmentDetails.apptEnd,
+                prepayment_amt: 50
+              })
+              .select();
+            if (error) throw error;
+
+            name = clientName;
+            responseMessage = `Great news, ${name}! Your ${state.appointmentDetails.serviceName} at ${state.appointmentDetails.storeName} is booked for ${new Date(state.appointmentDetails.apptStart).toLocaleDateString()} at ${new Date(state.appointmentDetails.apptStart).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}. Can’t wait to see you!`;
+            conversationState.delete(from);
+          }
+        } else {
+          responseMessage = `I didn’t quite get that. Please provide your name and phone number in the format: Name, Number (e.g., John, 96460132).`;
+        }
       } else if (state.step === 'store_info') {
-        // Handle store info flow - Store selection
         if (!state.storeName) {
-          // Waiting for store name
           if (details.store_name) {
             const { data: storeRecord } = await supabase
               .schema('store_management')
@@ -790,43 +788,43 @@ app.post('/twilio-webhook', async (req, res) => {
             responseMessage = `Which store would you like more details about (e.g., Idle, Glamour Salon)?`;
           }
         }
-      } else if (state.step === 'store_info_details') {
-        // Handle store info flow - Details selection
-        const { storeId, storeName } = state;
-        const { store, services, packages } = await fetchStoreInfo(storeId);
-        const lowerReply = reply.toLowerCase();
-        if (!state.infoType) {
-          if (details.info_type === 'address' || lowerReply.includes('address')) {
-            responseMessage = `Address for ${storeName}:\n${store.store_addressL1}`;
-            conversationState.delete(from); // Reset state
-          } else if (details.info_type === 'hours' || lowerReply.includes('hours') || lowerReply.includes('schedule')) {
-            const hours = store.store_operating_hours;
-            const formattedHours = Object.entries(hours)
-              .map(([day, info]) => {
-                if (info.isClosed) return `${day}: Closed`;
-                return `${day}: ${info.open} - ${info.close}`;
-              })
-              .join('\n');
-            responseMessage = `Operating Hours for ${storeName}:\n${formattedHours}`;
-            conversationState.delete(from); // Reset state
-          } else if (details.info_type === 'services' || lowerReply.includes('services')) {
-            const serviceList = services.map(s => `${s.service_name}: $${s.price} (${s.service_duration} mins)`).join('\n');
-            responseMessage = `Services at ${storeName}:\n${serviceList}`;
-            conversationState.delete(from); // Reset state
-          } else if (details.info_type === 'packages' || lowerReply.includes('packages')) {
-            const packageList = packages.map(p => {
-              const startDate = new Date(p.package_start).toLocaleDateString();
-              const endDate = new Date(p.package_end).toLocaleDateString();
-              return `${p.package_name}: $${p.package_price} (${p.num_sessions} sessions, ${p.num_credits} credits, valid ${startDate} - ${endDate}) - ${p.package_description}`;
-            }).join('\n');
-            responseMessage = `Packages at ${storeName}:\n${packageList}`;
-            conversationState.delete(from); // Reset state
+      } else if (state.step === 'view_appointments') {
+        const nameMatch = reply.match(/([a-zA-Z\s]+),\s*(\d+)/);
+        if (nameMatch) {
+          const clientName = nameMatch[1].trim();
+          const phoneNumber = nameMatch[2].trim();
+          if (phoneNumber !== fromWithoutPrefix) {
+            responseMessage = `The phone number you provided (${phoneNumber}) doesn’t match the number you’re messaging from (${fromWithoutPrefix}). Please use the same number or let me know if this is intentional.`;
           } else {
-            responseMessage = `What would you like to know about ${storeName}?\n1. Store Address\n2. Operating Hours\n3. Services\n4. Packages`;
+            const { clientId } = await createClientRecord(from, clientName);
+            const { data: appointments, error: apptError } = await supabase
+              .schema('appointments')
+              .from('appointments')
+              .select('appt_id, appt_start, service_id, store_id')
+              .eq('client_id', clientId);
+            if (apptError) throw apptError;
+
+            name = clientName;
+            if (!appointments || appointments.length === 0) {
+              responseMessage = `Hi ${name}, it looks like you don’t have any upcoming appointments. Would you like to book one now?`;
+            } else {
+              const apptDetails = await Promise.all(appointments.map(async (appt) => {
+                const { data: store } = await supabase
+                  .schema('store_management')
+                  .from('stores')
+                  .select('store_name')
+                  .eq('store_id', appt.store_id)
+                  .single();
+                return `${appt.service_id} at ${store.store_name} on ${new Date(appt.appt_start).toLocaleDateString()} at ${new Date(appt.appt_start).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}`;
+              }));
+              responseMessage = `Hi ${name}, here are your upcoming appointments:\n${apptDetails.join('\n')}`;
+            }
+            conversationState.delete(from);
           }
+        } else {
+          responseMessage = `I didn’t quite get that. Please provide your name and phone number in the format: Name, Number (e.g., John, 96460132).`;
         }
       } else if (state.step === 'change_appointment') {
-        // Handle change appointment flow
         const { data: apptData, error: apptError } = await supabase
           .schema('appointments')
           .from('appointments')
@@ -837,20 +835,20 @@ app.post('/twilio-webhook', async (req, res) => {
           .single();
         if (apptError || !apptData) {
           responseMessage = `No appointment found to change for ${name}. Would you like to book a new appointment instead?`;
-          conversationState.delete(from); // Reset state
+          conversationState.delete(from);
         } else {
           if (details.date || details.time) {
             const dateTime = parseDateTime(details.date, details.time);
             if (dateTime && !isNaN(dateTime.getTime())) {
               const apptStart = dateTime;
-              const apptEnd = new Date(apptStart.getTime() + (apptData.appt_end - apptData.appt_start)); // Preserve original duration
+              const apptEnd = new Date(apptStart.getTime() + (apptData.appt_end - apptData.appt_start));
               await supabase
                 .schema('appointments')
                 .from('appointments')
                 .update({ appt_start: apptStart.toISOString(), appt_end: apptEnd.toISOString() })
                 .eq('appt_id', apptData.appt_id);
               responseMessage = `All set, ${name}! Your ${apptData.service_id} appointment is now rescheduled to ${apptStart.toLocaleDateString()} at ${apptStart.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}.`;
-              conversationState.delete(from); // Reset state
+              conversationState.delete(from);
             } else {
               responseMessage = `I didn’t quite get that date or time. Please try again with something like 'tomorrow at 2 PM' or 'this Friday at 10 am'.`;
             }
@@ -860,12 +858,10 @@ app.post('/twilio-webhook', async (req, res) => {
         }
       } else if (state.step === 'package_inquiry') {
         if (!state.phoneNumberRequested) {
-          // Ask for phone number
           state.phoneNumberRequested = true;
           conversationState.set(from, state);
           responseMessage = `I'd love to help you with your package details, ${name}! Could you please provide your registered phone number (e.g., 96460132) so I can look it up for you?`;
         } else {
-          // Process the provided phone number
           const phoneNumber = reply;
           const { data: globalClient, error: globalError } = await supabase
             .schema('clients')
@@ -875,7 +871,7 @@ app.post('/twilio-webhook', async (req, res) => {
             .single();
           if (globalError || !globalClient) {
             responseMessage = `Sorry, ${name}, I couldn’t find a client with the phone number ${phoneNumber}. Please try again with your registered number or contact support.`;
-            conversationState.delete(from); // Reset state
+            conversationState.delete(from);
           } else {
             const { data: clientPackages, error: packageError } = await supabase
               .schema('clients')
@@ -894,10 +890,9 @@ app.post('/twilio-webhook', async (req, res) => {
               .eq('global_client_id', globalClient.global_client_id);
             if (packageError || !clientPackages || clientPackages.length === 0) {
               responseMessage = `It looks like you don’t have any active packages, ${name}. Would you like to purchase one?`;
-              conversationState.delete(from); // Reset state
+              conversationState.delete(from);
             } else {
               const packageDetails = await Promise.all(clientPackages.map(async (pkg) => {
-                // Fetch store name from store_management.stores
                 const { data: store, error: storeError } = await supabase
                   .schema('store_management')
                   .from('stores')
@@ -906,7 +901,6 @@ app.post('/twilio-webhook', async (req, res) => {
                   .single();
                 if (storeError) throw storeError;
 
-                // Fetch package details from store_management.packages
                 const { data: packageInfo, error: packageInfoError } = await supabase
                   .schema('store_management')
                   .from('packages')
@@ -937,95 +931,144 @@ app.post('/twilio-webhook', async (req, res) => {
                        `Status: ${pkg.status}`;
               }));
               responseMessage = `Here are your package details, ${name}:\n${packageDetails.join('\n\n')}\nLet me know if you need more information!`;
-              conversationState.delete(from); // Reset state
+              conversationState.delete(from);
             }
           }
         }
       }
     } else {
-      // Handle intents when not in a conversation state
       if (intent === 'GREETING') {
-        responseMessage = `Hello ${name}! How can I help you today? You can:\n- Book an appointment (e.g., "I need to book an appointment")\n- Change an appointment (e.g., "I want to change my booking")\n- Get store info (e.g., "Can I get more details about a salon")\n- Check your package details (e.g., "Can you tell me about my package?")\nJust let me know what you'd like!`;
+        responseMessage = `Hi ${name}, how can I help you today? You can:\n- Book an appointment (e.g., "I need to book an appointment")\n- Get store info (e.g., "Can I get more details about a salon")\n- See your upcoming appointments (e.g., "Can I see my upcoming appointments?")\nWhat would you like to do?`;
       } else if (intent === 'BOOK_APPOINTMENT') {
-        conversationState.set(from, { step: 'book_appointment' });
-        responseMessage = `I'd be happy to help you book an appointment, ${name}! Which store would you like to book at (e.g., Idle, Glamour Salon)?`;
-      } else if (intent === 'CHANGE_APPOINTMENT') {
-        const { data: apptData, error: apptError } = await supabase
-          .schema('appointments')
-          .from('appointments')
-          .select('appt_id, appt_start, service_id')
-          .eq('client_id', clientLink.client_id)
-          .order('appt_start', { ascending: false })
-          .limit(1)
-          .single();
-        if (apptError || !apptData) {
-          responseMessage = `No appointment found to change for ${name}. Would you like to book a new appointment instead?`;
+        if (!clientData) {
+          conversationState.set(from, { step: 'collect_client_details', from, intent: 'BOOK_APPOINTMENT' });
+          responseMessage = `To book an appointment, I’ll need a few details. Could you please share your name and phone number (e.g., John, 96460132)?`;
         } else {
-          conversationState.set(from, { step: 'change_appointment' });
-          responseMessage = `Let's reschedule your ${apptData.service_id} appointment, ${name}. When would you like it? Try something like 'tomorrow at 2 PM' or 'this Friday at 10 am'!`;
+          conversationState.set(from, { step: 'book_appointment' });
+          responseMessage = `I'd be happy to help you book an appointment, ${name}! Which store would you like to book at (e.g., Idle, Glamour Salon)?`;
+        }
+      } else if (intent === 'VIEW_APPOINTMENTS') {
+        if (!clientData) {
+          conversationState.set(from, { step: 'view_appointments', from });
+          responseMessage = `To view your appointments, I’ll need a few details. Could you please share your name and phone number (e.g., John, 96460132)?`;
+        } else {
+          const { data: appointments, error: apptError } = await supabase
+            .schema('appointments')
+            .from('appointments')
+            .select('appt_id, appt_start, service_id, store_id')
+            .eq('client_id', clientLink.client_id);
+          if (apptError) throw apptError;
+
+          if (!appointments || appointments.length === 0) {
+            responseMessage = `Hi ${name}, it looks like you don’t have any upcoming appointments. Would you like to book one now?`;
+          } else {
+            const apptDetails = await Promise.all(appointments.map(async (appt) => {
+              const { data: store } = await supabase
+                .schema('store_management')
+                .from('stores')
+                .select('store_name')
+                .eq('store_id', appt.store_id)
+                .single();
+              return `${appt.service_id} at ${store.store_name} on ${new Date(appt.appt_start).toLocaleDateString()} at ${new Date(appt.appt_start).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}`;
+            }));
+            responseMessage = `Hi ${name}, here are your upcoming appointments:\n${apptDetails.join('\n')}`;
+          }
+        }
+      } else if (intent === 'CHANGE_APPOINTMENT') {
+        if (!clientData) {
+          conversationState.set(from, { step: 'collect_client_details', from, intent: 'CHANGE_APPOINTMENT' });
+          responseMessage = `To change your appointment, I’ll need a few details. Could you please share your name and phone number (e.g., John, 96460132)?`;
+        } else {
+          const { data: apptData, error: apptError } = await supabase
+            .schema('appointments')
+            .from('appointments')
+            .select('appt_id, appt_start, service_id')
+            .eq('client_id', clientLink.client_id)
+            .order('appt_start', { ascending: false })
+            .limit(1)
+            .single();
+          if (apptError || !apptData) {
+            responseMessage = `No appointment found to change for ${name}. Would you like to book a new appointment instead?`;
+          } else {
+            conversationState.set(from, { step: 'change_appointment' });
+            responseMessage = `Let's reschedule your ${apptData.service_id} appointment, ${name}. When would you like it? Try something like 'tomorrow at 2 PM' or 'this Friday at 10 am'!`;
+          }
         }
       } else if (intent === 'STORE_INFO') {
         conversationState.set(from, { step: 'store_info' });
         responseMessage = `I'd be happy to help with that, ${name}! Which store would you like more details about (e.g., Idle, Glamour Salon)?`;
       } else if (intent === 'CONFIRM_APPOINTMENT') {
-        const { data: apptData, error: apptError } = await supabase
-          .schema('appointments')
-          .from('appointments')
-          .select('appt_id, appt_start, service_id')
-          .eq('client_id', clientLink.client_id)
-          .order('appt_start', { ascending: false })
-          .limit(1)
-          .single();
-        if (apptError || !apptData) {
-          responseMessage = `No appointment found to confirm for ${name}. Would you like to book a new appointment?`;
+        if (!clientData) {
+          conversationState.set(from, { step: 'collect_client_details', from, intent: 'CONFIRM_APPOINTMENT' });
+          responseMessage = `To confirm your appointment, I’ll need a few details. Could you please share your name and phone number (e.g., John, 96460132)?`;
         } else {
-          await supabase
+          const { data: apptData, error: apptError } = await supabase
             .schema('appointments')
             .from('appointments')
-            .update({ status: 'confirmed' })
-            .eq('appt_id', apptData.appt_id);
-          responseMessage = `Thank you, ${name}! Your ${apptData.service_id} appointment on ${new Date(apptData.appt_start).toLocaleDateString()} at ${new Date(apptData.appt_start).toLocaleTimeString()} is confirmed.`;
+            .select('appt_id, appt_start, service_id')
+            .eq('client_id', clientLink.client_id)
+            .order('appt_start', { ascending: false })
+            .limit(1)
+            .single();
+          if (apptError || !apptData) {
+            responseMessage = `No appointment found to confirm for ${name}. Would you like to book a new appointment?`;
+          } else {
+            await supabase
+              .schema('appointments')
+              .from('appointments')
+              .update({ status: 'confirmed' })
+              .eq('appt_id', apptData.appt_id);
+            responseMessage = `Thank you, ${name}! Your ${apptData.service_id} appointment on ${new Date(apptData.appt_start).toLocaleDateString()} at ${new Date(apptData.appt_start).toLocaleTimeString()} is confirmed.`;
+          }
         }
       } else if (intent === 'CANCEL_APPOINTMENT') {
-        const { data: apptData, error: apptError } = await supabase
-          .schema('appointments')
-          .from('appointments')
-          .select('appt_id, appt_start, service_id')
-          .eq('client_id', clientLink.client_id)
-          .order('appt_start', { ascending: false })
-          .limit(1)
-          .single();
-        if (apptError || !apptData) {
-          responseMessage = `No appointment found to cancel for ${name}. Would you like to book a new appointment?`;
+        if (!clientData) {
+          conversationState.set(from, { step: 'collect_client_details', from, intent: 'CANCEL_APPOINTMENT' });
+          responseMessage = `To cancel your appointment, I’ll need a few details. Could you please share your name and phone number (e.g., John, 96460132)?`;
         } else {
-          await supabase
+          const { data: apptData, error: apptError } = await supabase
             .schema('appointments')
             .from('appointments')
-            .delete()
-            .eq('appt_id', apptData.appt_id);
-          responseMessage = `Sorry to hear that, ${name}. Your ${apptData.service_id} appointment on ${new Date(apptData.appt_start).toLocaleDateString()} at ${new Date(apptData.appt_start).toLocaleTimeString()} has been canceled.`;
+            .select('appt_id, appt_start, service_id')
+            .eq('client_id', clientLink.client_id)
+            .order('appt_start', { ascending: false })
+            .limit(1)
+            .single();
+          if (apptError || !apptData) {
+            responseMessage = `No appointment found to cancel for ${name}. Would you like to book a new appointment?`;
+          } else {
+            await supabase
+              .schema('appointments')
+              .from('appointments')
+              .delete()
+              .eq('appt_id', apptData.appt_id);
+            responseMessage = `Sorry to hear that, ${name}. Your ${apptData.service_id} appointment on ${new Date(apptData.appt_start).toLocaleDateString()} at ${new Date(apptData.appt_start).toLocaleTimeString()} has been canceled.`;
+          }
         }
       } else if (intent === 'PACKAGE_INQUIRY') {
         conversationState.set(from, { step: 'package_inquiry', phoneNumberRequested: false });
         responseMessage = `I'd love to help you with your package details, ${name}! Could you please provide your registered phone number (e.g., 96460132) so I can look it up for you?`;
       } else {
-        // Fallback for unknown intents
         const lowerMessage = reply.toLowerCase();
         if (lowerMessage.includes('book') || lowerMessage.includes('appointment') || lowerMessage.includes('schedule') || lowerMessage.includes('service')) {
-          conversationState.set(from, { step: 'book_appointment' });
-          responseMessage = `I'd be happy to help you book an appointment, ${name}! Which store would you like to book at (e.g., Idle, Glamour Salon)?`;
+          if (!clientData) {
+            conversationState.set(from, { step: 'collect_client_details', from, intent: 'BOOK_APPOINTMENT' });
+            responseMessage = `To book an appointment, I’ll need a few details. Could you please share your name and phone number (e.g., John, 96460132)?`;
+          } else {
+            conversationState.set(from, { step: 'book_appointment' });
+            responseMessage = `I'd be happy to help you book an appointment, ${name}! Which store would you like to book at (e.g., Idle, Glamour Salon)?`;
+          }
         } else {
-          responseMessage = `I'm not sure how to help with that, ${name}. You can:\n- Book an appointment (e.g., "I need to book an appointment")\n- Change an appointment (e.g., "I want to change my booking")\n- Get store info (e.g., "Can I get more details about a salon")\n- Check your package details (e.g., "Can you tell me about my package?")\nWhat would you like to do?`;
+          responseMessage = `Hi ${name}, how can I help you today? You can:\n- Book an appointment (e.g., "I need to book an appointment")\n- Get store info (e.g., "Can I get more details about a salon")\n- See your upcoming appointments (e.g., "Can I see my upcoming appointments?")\nWhat would you like to do?`;
         }
       }
     }
 
-    // Rephrase the response using DeepSeek
     const rephrasedMessage = await rephraseWithDeepSeek(responseMessage, name);
 
     const result = await twilioClient.messages.create({
       from: process.env.TWILIO_WHATSAPP_NUMBER,
-      to: `whatsapp:+65${clientData.client_ph}`,
+      to: `whatsapp:${from}`,
       body: rephrasedMessage
     });
     console.log(`Reply from ${name} (${from}): ${reply}`);
