@@ -643,13 +643,13 @@ app.post('/twilio-webhook', async (req, res) => {
       } else if (state.step === 'book_appointment') {
         if (!state.storeName) {
           if (details.store_name) {
-            const { data: storeRecord } = await supabase
+            const { data: storeRecord, error: storeError } = await supabase
               .schema('store_management')
               .from('stores')
               .select('store_id store_name')
-              .eq('store_name', details.store_name)
+              .ilike('store_name', `%${details.store_name}%`)
               .single()
-            if (!storeRecord) {
+            if (storeError || !storeRecord) {
               responseMessage = `sorry ${name} I couldn't find a store named ${details.store_name} can you try again`
             } else {
               state.storeName = storeRecord.store_name
@@ -840,13 +840,13 @@ app.post('/twilio-webhook', async (req, res) => {
       } else if (state.step === 'store_info') {
         if (!state.storeName) {
           if (details.store_name) {
-            const { data: storeRecord } = await supabase
+            const { data: storeRecord, error: storeError } = await supabase
               .schema('store_management')
               .from('stores')
               .select('store_id store_name')
-              .eq('store_name', details.store_name)
+              .ilike('store_name', `%${details.store_name}%`)
               .single()
-            if (!storeRecord) {
+            if (storeError || !storeRecord) {
               responseMessage = `sorry ${name} I couldn't find a store named ${details.store_name} can you try again`
             } else {
               state.storeName = storeRecord.store_name
