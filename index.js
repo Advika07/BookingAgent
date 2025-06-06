@@ -9,34 +9,45 @@ const app = express()
 app.use(express.urlencoded({ extended: false }))
 app.use(express.json())
 
+console.log('Starting application setup...')
+
+// Verify environment variables and initialize clients
 if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
   console.error('Twilio credentials missing check your .env file')
   process.exit(1)
 }
+console.log('Twilio credentials loaded successfully')
 console.log('Loaded TWILIO_ACCOUNT_SID:', process.env.TWILIO_ACCOUNT_SID)
 console.log('Loaded TWILIO_AUTH_TOKEN:', process.env.TWILIO_AUTH_TOKEN)
 console.log('Loaded TWILIO_WHATSAPP_NUMBER:', process.env.TWILIO_WHATSAPP_NUMBER)
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
+console.log('Twilio client initialized')
 
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_API_KEY) {
   console.error('Supabase credentials missing check your .env file')
   process.exit(1)
 }
+console.log('Supabase credentials loaded successfully')
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_API_KEY)
+console.log('Supabase client initialized')
 
 if (!process.env.DEEPSEEK_API_KEY) {
   console.error('DeepSeek API key missing check your .env file')
   process.exit(1)
 }
+console.log('DeepSeek API key loaded successfully')
 const openai = new OpenAI({
   apiKey: process.env.DEEPSEEK_API_KEY,
   baseURL: 'https://api.deepseek.com/v1',
 })
+console.log('OpenAI client initialized')
 
 const conversationState = new Map()
+console.log('Conversation state map initialized')
 
 const fetchAppointments = async () => {
   try {
+    console.log('Fetching appointments...')
     const { data, error } = await supabase
       .schema('appointments')
       .from('appointments')
@@ -50,6 +61,7 @@ const fetchAppointments = async () => {
         appt_end
       `)
     if (error) throw error
+    console.log('Appointments fetched:', data.length)
     const appointments = await Promise.all(data.map(async (appt) => {
       const { data: clientData, error: clientError } = await supabase
         .schema('clients')
@@ -76,6 +88,7 @@ const fetchAppointments = async () => {
 
 const fetchStoreInfo = async (storeId) => {
   try {
+    console.log('Fetching store info for storeId:', storeId)
     const { data: store, error: storeError } = await supabase
       .schema('store_management')
       .from('stores')
@@ -83,6 +96,7 @@ const fetchStoreInfo = async (storeId) => {
       .eq('store_id', storeId)
       .single()
     if (storeError) throw storeError
+    console.log('Store fetched:', store)
 
     const { data: services, error: servicesError } = await supabase
       .schema('store_management')
@@ -90,6 +104,7 @@ const fetchStoreInfo = async (storeId) => {
       .select('service_id service_name service_description price service_duration')
       .eq('store_id', storeId)
     if (servicesError) throw servicesError
+    console.log('Services fetched:', services.length)
 
     const { data: packages, error: packagesError } = await supabase
       .schema('store_management')
@@ -97,6 +112,7 @@ const fetchStoreInfo = async (storeId) => {
       .select('package_id package_name package_description package_limit package_type num_sessions num_credits package_price services_linked package_start package_end')
       .eq('store_id', storeId)
     if (packagesError) throw packagesError
+    console.log('Packages fetched:', packages.length)
 
     return { store, services, packages }
   } catch (error) {
@@ -107,6 +123,7 @@ const fetchStoreInfo = async (storeId) => {
 
 const createClientRecord = async (phoneNumber, name) => {
   try {
+    console.log('Creating client record for phone:', phoneNumber)
     const { data: globalClient, error: globalError } = await supabase
       .schema('clients')
       .from('global_clients')
@@ -138,6 +155,7 @@ const createClientRecord = async (phoneNumber, name) => {
 
 const linkClientToStore = async (globalClientId, storeId) => {
   try {
+    console.log('Linking client to store:', globalClientId, storeId)
     const { error } = await supabase
       .schema('clients')
       .from('clients')
@@ -152,6 +170,7 @@ const linkClientToStore = async (globalClientId, storeId) => {
 
 const sendReminders = async () => {
   try {
+    console.log('Sending reminders...')
     const today = new Date()
     today.setHours(0, 0, 0, 0)
     const appointments = await fetchAppointments()
@@ -185,6 +204,7 @@ app.get('/twilio-webhook', (req, res) => {
 })
 
 app.post('/book-appointment', async (req, res) => {
+  console.log('Received book-appointment request:', req.body)
   const { client_id, appointment_date, time, service_id, stylist, store_id } = req.body
   try {
     const apptStart = new Date(appointment_date + 'T' + time + '+08:00')
@@ -210,6 +230,7 @@ app.post('/book-appointment', async (req, res) => {
 
 async function rephraseWithDeepSeek(message, name) {
   try {
+    console.log('Rephrasing message:', message)
     if (!message) {
       return `hi ${name} I don't have enough details yet please let me know what you'd like to do and I'll help you`
     }
@@ -381,6 +402,7 @@ function suggestNextAvailableTime(storeId, requestedTime, serviceDuration, opera
 
 async function classifyIntent(message) {
   try {
+    console.log('Classifying intent for message:', message)
     const prompt = `
       You are a helpful assistant for Glamour Salon analyze the customer's message and classify their intent the possible intents are
       - GREETING (e.g. "hello" "hi" "hey there" "good morning")
@@ -434,7 +456,9 @@ async function classifyIntent(message) {
       responseContent = responseContent.replace(/^```json\n/, '').replace(/\n```$/, '')
     }
 
-    return JSON.parse(responseContent)
+    const result = JSON.parse(responseContent)
+    console.log('Intent classification result:', result)
+    return result
   } catch (error) {
     console.error('DeepSeek intent classification error:', error.message)
     const lowerMessage = message.toLowerCase()
@@ -476,7 +500,7 @@ async function classifyIntent(message) {
           info_type: infoType
         }
       }
-    } else if (lowerMessage.includes('upcoming') || lowerMessage.includes('appointments') || lowerMessage.includes('bookings') || lowerMessage.includes('my schedule') || lowerMessage.includes('what appointments do i have')) {
+    } else if (lowerMessage.includes('upcoming') || lowerMessage.includes('appointments') || lowerMessage.includes('bookings') || lowerMessage.includes('my schedule') || lowerMessage.includes('what appointments do i have') || lowerMessage.includes('i want to see upcoming appointments')) {
       return {
         intent: 'VIEW_APPOINTMENTS',
         details: {
@@ -610,12 +634,16 @@ app.post('/twilio-webhook', async (req, res) => {
     const { intent, details } = await classifyIntent(reply)
 
     // Reset state if intent changes to a new top-level intent
+    console.log('Current state before reset:', conversationState.get(from))
+    console.log('Detected intent:', intent)
     if (conversationState.has(from) && ['GREETING', 'BOOK_APPOINTMENT', 'VIEW_APPOINTMENTS', 'CHANGE_APPOINTMENT', 'STORE_INFO', 'PACKAGE_INQUIRY'].includes(intent)) {
+      console.log('Resetting conversation state for new intent:', intent)
       conversationState.delete(from)
     }
 
     if (conversationState.has(from)) {
       const state = conversationState.get(from)
+      console.log('Current conversation state:', state)
       if (state.step === 'selectOption') {
         const { storeId, storeName } = state
         const { store, services, packages } = await fetchStoreInfo(storeId)
@@ -648,15 +676,19 @@ app.post('/twilio-webhook', async (req, res) => {
       } else if (state.step === 'book_appointment') {
         if (!state.storeName) {
           if (details.store_name) {
+            console.log('Searching for store:', details.store_name)
             const { data: storeRecord, error: storeError } = await supabase
               .schema('store_management')
               .from('stores')
               .select('store_id store_name')
-              .ilike('store_name', details.store_name.replace(' salon', '').trim())
+              .ilike('store_name', `%${details.store_name.replace(' salon', '').trim()}%`)
               .single()
             if (storeError || !storeRecord) {
+              console.error('Store search error:', storeError?.message)
+              console.log('Store not found in database:', details.store_name)
               responseMessage = `sorry ${name} I couldn't find a store named ${details.store_name} can you try again`
             } else {
+              console.log('Store found:', storeRecord)
               state.storeName = storeRecord.store_name
               state.storeId = storeRecord.store_id
               state.step = 'book_appointment_service'
@@ -931,15 +963,19 @@ app.post('/twilio-webhook', async (req, res) => {
       } else if (state.step === 'store_info') {
         if (!state.storeName) {
           if (details.store_name) {
+            console.log('Searching for store in store_info:', details.store_name)
             const { data: storeRecord, error: storeError } = await supabase
               .schema('store_management')
               .from('stores')
               .select('store_id store_name')
-              .ilike('store_name', details.store_name.replace(' salon', '').trim())
+              .ilike('store_name', `%${details.store_name.replace(' salon', '').trim()}%`)
               .single()
             if (storeError || !storeRecord) {
+              console.error('Store search error in store_info:', storeError?.message)
+              console.log('Store not found in database in store_info:', details.store_name)
               responseMessage = `sorry ${name} I couldn't find a store named ${details.store_name} can you try again`
             } else {
+              console.log('Store found in store_info:', storeRecord)
               state.storeName = storeRecord.store_name
               state.storeId = storeRecord.store_id
               state.step = 'selectOption'
@@ -1201,3 +1237,4 @@ app.listen(port, async () => {
     console.error('Error during reminder sending:', error.message)
   }
 })
+console.log('Server setup complete, listening for requests...')
