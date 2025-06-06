@@ -171,13 +171,11 @@ const sendReminders = async () => {
     throw error;
   }
 };
-
 // Add this before the POST handler
 app.get('/twilio-webhook', (req, res) => {
   console.log('Received GET request on /twilio-webhook:', req.query);
   res.status(200).send('Webhook endpoint is active. Use POST for WhatsApp messages.');
 });
-
 // Controller for booking appointments
 app.post('/book-appointment', async (req, res) => {
   const { client_id, appointment_date, time, service_id, stylist, store_id } = req.body;
@@ -237,7 +235,7 @@ async function rephraseWithDeepSeek(message, name) {
 
 // Function to parse natural language date and time
 function parseDateTime(dateStr, timeStr) {
-  const now = new Date(); // Updated to use current date
+  const now = new Date('2025-05-29T02:32:00+08:00'); // Updated to current date and time
   let dateTime;
 
   if (dateStr && timeStr) {
@@ -559,61 +557,28 @@ app.post('/twilio-webhook', async (req, res) => {
     if (from.startsWith('+65')) {
       fromWithoutPrefix = from.slice(3); // Remove +65 to get 96460132
     }
-
-    // Check if client exists
-    let clientData = null;
-    let clientLink = null;
-    const { data: existingClient, error: clientError } = await supabase
+    const { data: clientData, error: clientError } = await supabase
       .schema('clients')
       .from('global_clients')
       .select('client_name, preferred_name, global_client_id, client_ph')
       .eq('client_ph', fromWithoutPrefix)
       .single();
-    
-    if (clientError || !existingClient) {
-      console.log(`No matching client data for ${fromWithoutPrefix}, creating new client.`);
-      // Create a new client record
-      const clientId = await createClientRecord(from, 'Unknown'); // Default name as 'Unknown'
-      // Fetch the newly created client data
-      const { data: newClient, error: newClientError } = await supabase
-        .schema('clients')
-        .from('global_clients')
-        .select('client_name, preferred_name, global_client_id, client_ph')
-        .eq('client_ph', fromWithoutPrefix)
-        .single();
-      if (newClientError || !newClient) {
-        console.error(`Failed to fetch newly created client for ${fromWithoutPrefix}: ${newClientError?.message}`);
-        res.status(500).send('Error creating new client.');
-        return;
-      }
-      clientData = newClient;
+    if (clientError || !clientData) {
+      console.log(`No matching client data for ${fromWithoutPrefix}`);
+      res.status(200).send('Customer not found.');
+      return;
+    }
 
-      const { data: newClientLink, error: linkError } = await supabase
-        .schema('clients')
-        .from('clients')
-        .select('client_id')
-        .eq('global_client_id', clientData.global_client_id)
-        .single();
-      if (linkError || !newClientLink) {
-        console.error(`No client link found for global_client_id ${clientData.global_client_id}: ${linkError?.message}`);
-        res.status(500).send('Error linking new client.');
-        return;
-      }
-      clientLink = newClientLink;
-    } else {
-      clientData = existingClient;
-      const { data: existingClientLink, error: linkError } = await supabase
-        .schema('clients')
-        .from('clients')
-        .select('client_id')
-        .eq('global_client_id', clientData.global_client_id)
-        .single();
-      if (linkError || !existingClientLink) {
-        console.error(`No client link found for global_client_id ${clientData.global_client_id}: ${linkError?.message}`);
-        res.status(500).send('Error fetching client link.');
-        return;
-      }
-      clientLink = existingClientLink;
+    const { data: clientLink } = await supabase
+      .schema('clients')
+      .from('clients')
+      .select('client_id')
+      .eq('global_client_id', clientData.global_client_id)
+      .single();
+    if (!clientLink) {
+      console.log(`No client link found for global_client_id ${clientData.global_client_id}`);
+      res.status(200).send('No client link found.');
+      return;
     }
 
     let responseMessage;
@@ -792,34 +757,37 @@ app.post('/twilio-webhook', async (req, res) => {
         }
       } else if (state.step === 'store_info_details') {
         // Handle store info flow - Details selection
-        const { storeId, name } = state;
+        const { storeId, storeName } = state;
         const { store, services, packages } = await fetchStoreInfo(storeId);
         const lowerReply = reply.toLowerCase();
         if (!state.infoType) {
           if (details.info_type === 'address' || lowerReply.includes('address')) {
-            responseMessage = `Address for ${storeId}:\n${store.store_addressL1}`;
+            responseMessage = `Address for ${storeName}:\n${store.store_addressL1}`;
             conversationState.delete(from); // Reset state
-          } else if (details.info_type === 'hours || lowerMessage.includes('hours') || lowerMessage.includes('schedule')) {
+          } else if (details.info_type === 'hours' || lowerReply.includes('hours') || lowerReply.includes('schedule')) {
             const hours = store.store_operating_hours;
-            const formattedHours = hours.map(([day, info]) => {
-              if (info.isClosed) return `${day}: Closed`;
-              return `${day}: ${info.open} - ${hour}: ${info.close}`;
-            }).join('\n');
-            responseMessage = `Operating Hours for ${storeId}:\n${formattedHours}`;
-            conversationState.delete(from);
-          } else if (details.info_type || lowerReply.includes('services')) {
-            const serviceList = services.map(s => `${s.service_name}: $${s.price} (${s.service_duration} mins)`).join('\n');
-            responseMessage = `Services at ${storeId}:\n${serviceList}`;
+            const formattedHours = Object.entries(hours)
+              .map(([day, info]) => {
+                if (info.isClosed) return `${day}: Closed`;
+                return `${day}: ${info.open} - ${info.close}`;
+              })
+              .join('\n');
+            responseMessage = `Operating Hours for ${storeName}:\n${formattedHours}`;
             conversationState.delete(from); // Reset state
-          } else if (details.info_type === 'packages' || lowerPackage.includes('packages')) {
-          const packageList = packages.map(p => {
-            const startDate = new Date(p.package_start).toLocaleDateString();
-            const endDate = new Date(p.package_end).toLocaleDateString();
-            return `${p.package_name}: $${p.package_price} (${p.num_sessions} sessions, ${p.num_credits} credits, valid ${startDate.toISOString()} - ${endDate.toISOString()}) - ${p.package_description}`;
-          }).join('\n');
-          responseMessage.delete(`Packages at ${storeId}:\n${packageList}`);
+          } else if (details.info_type === 'services' || lowerReply.includes('services')) {
+            const serviceList = services.map(s => `${s.service_name}: $${s.price} (${s.service_duration} mins)`).join('\n');
+            responseMessage = `Services at ${storeName}:\n${serviceList}`;
+            conversationState.delete(from); // Reset state
+          } else if (details.info_type === 'packages' || lowerReply.includes('packages')) {
+            const packageList = packages.map(p => {
+              const startDate = new Date(p.package_start).toLocaleDateString();
+              const endDate = new Date(p.package_end).toLocaleDateString();
+              return `${p.package_name}: $${p.package_price} (${p.num_sessions} sessions, ${p.num_credits} credits, valid ${startDate} - ${endDate}) - ${p.package_description}`;
+            }).join('\n');
+            responseMessage = `Packages at ${storeName}:\n${packageList}`;
+            conversationState.delete(from); // Reset state
           } else {
-            responseMessage = `What would you like to know about ${storeId}?\n1. Store Address\n2. Operating Hours\n3. Services\n4. Packages`;
+            responseMessage = `What would you like to know about ${storeName}?\n1. Store Address\n2. Operating Hours\n3. Services\n4. Packages`;
           }
         }
       } else if (state.step === 'change_appointment') {
@@ -907,7 +875,7 @@ app.post('/twilio-webhook', async (req, res) => {
                 const { data: packageInfo, error: packageInfoError } = await supabase
                   .schema('store_management')
                   .from('packages')
-                  .select('
+                  .select(`
                     package_name,
                     package_description,
                     num_sessions,
@@ -925,13 +893,13 @@ app.post('/twilio-webhook', async (req, res) => {
                 const packageEnd = new Date(packageInfo.package_end).toLocaleDateString();
 
                 return `Package: ${packageInfo.package_name} at ${store.store_name}\n` +
-                           `Description: ${packageInfo.package_description}\n` +
-                           `rPrice: ${packageInfo.package_price}\n` +
-                           `Total Sessions: ${packageInfo.num_sessions}, Sessions Remaining: ${pkg.session_remaining}\n` +
-                           `Total Credits: ${packageInfo.num_credits}, Credits Remaining: ${pkg.credits_remaining}\n` +
-                           `Purchased On: ${purchaseDate.toString()}\n` +
-                           `Valid From: ${packageStart.toISOString()} to ${packageEnd.toISOString()}\n` +
-                           `Status: ${pkg.status}`;
+                       `Description: ${packageInfo.package_description}\n` +
+                       `Price: $${packageInfo.package_price}\n` +
+                       `Total Sessions: ${packageInfo.num_sessions}, Sessions Remaining: ${pkg.session_remaining}\n` +
+                       `Total Credits: ${packageInfo.num_credits}, Credits Remaining: ${pkg.credits_remaining}\n` +
+                       `Purchased On: ${purchaseDate}\n` +
+                       `Valid From: ${packageStart} to ${packageEnd}\n` +
+                       `Status: ${pkg.status}`;
               }));
               responseMessage = `Here are your package details, ${name}:\n${packageDetails.join('\n\n')}\nLet me know if you need more information!`;
               conversationState.delete(from); // Reset state
@@ -945,7 +913,7 @@ app.post('/twilio-webhook', async (req, res) => {
         responseMessage = `Hello ${name}! How can I help you today? You can:\n- Book an appointment (e.g., "I need to book an appointment")\n- Change an appointment (e.g., "I want to change my booking")\n- Get store info (e.g., "Can I get more details about a salon")\n- Check your package details (e.g., "Can you tell me about my package?")\nJust let me know what you'd like!`;
       } else if (intent === 'BOOK_APPOINTMENT') {
         conversationState.set(from, { step: 'book_appointment' });
-        responseMessage = `I'd be happy to help you book an appointment, ${name}! Which store would you like to book at (e.g., Idle, Glamour Id)?`;
+        responseMessage = `I'd be happy to help you book an appointment, ${name}! Which store would you like to book at (e.g., Idle, Glamour Salon)?`;
       } else if (intent === 'CHANGE_APPOINTMENT') {
         const { data: apptData, error: apptError } = await supabase
           .schema('appointments')
@@ -981,7 +949,7 @@ app.post('/twilio-webhook', async (req, res) => {
             .from('appointments')
             .update({ status: 'confirmed' })
             .eq('appt_id', apptData.appt_id);
-          responseMessage = `Thank you, ${name}! Your ${apptData.service_id} appointment on ${new Date(apptData.appt_start).toLocaleDateString()} at ${apptData.appt_start.toLocaleTimeString()} is confirmed.`;
+          responseMessage = `Thank you, ${name}! Your ${apptData.service_id} appointment on ${new Date(apptData.appt_start).toLocaleDateString()} at ${new Date(apptData.appt_start).toLocaleTimeString()} is confirmed.`;
         }
       } else if (intent === 'CANCEL_APPOINTMENT') {
         const { data: apptData, error: apptError } = await supabase
