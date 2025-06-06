@@ -136,6 +136,20 @@ const createClientRecord = async (phoneNumber, name) => {
   }
 }
 
+const linkClientToStore = async (globalClientId, storeId) => {
+  try {
+    const { error } = await supabase
+      .schema('clients')
+      .from('clients')
+      .update({ store_id: storeId })
+      .eq('global_client_id', globalClientId)
+    if (error) throw error
+  } catch (error) {
+    console.error('Error linking client to store:', error.message)
+    throw error
+  }
+}
+
 const sendReminders = async () => {
   try {
     const today = new Date()
@@ -377,6 +391,8 @@ async function classifyIntent(message) {
       - CONFIRM_APPOINTMENT (e.g. "YES" "yes" "confirm" "i confirm")
       - CANCEL_APPOINTMENT (e.g. "NO" "no" "cancel" "i want to cancel")
       - PACKAGE_INQUIRY (e.g. "can you tell me about my package" "is my package still active" "how many sessions are left" "package details" "what's my package status")
+      - REGISTER_CONFIRM (e.g. "YES" "yes" "sure" "okay" for confirming registration)
+      - REGISTER_DECLINE (e.g. "NO" "no" "not now" for declining registration)
       - UNKNOWN (if the intent doesn't match any of the above)
 
       Additionally extract any relevant details such as
@@ -507,6 +523,28 @@ async function classifyIntent(message) {
     } else if (lowerMessage.includes('package') || lowerMessage.includes('session') || lowerMessage.includes('credit') || lowerMessage.includes('active') || lowerMessage.includes('package status')) {
       return {
         intent: 'PACKAGE_INQUIRY',
+        details: {
+          store_name: null,
+          service_name: null,
+          date: null,
+          time: null,
+          info_type: null
+        }
+      }
+    } else if (lowerMessage.toUpperCase() === 'YES' || lowerMessage.toLowerCase() === 'yes' || lowerMessage.toLowerCase() === 'sure' || lowerMessage.toLowerCase() === 'okay') {
+      return {
+        intent: 'REGISTER_CONFIRM',
+        details: {
+          store_name: null,
+          service_name: null,
+          date: null,
+          time: null,
+          info_type: null
+        }
+      }
+    } else if (lowerMessage.toUpperCase() === 'NO' || lowerMessage.toLowerCase() === 'no' || lowerMessage.toLowerCase() === 'not now') {
+      return {
+        intent: 'REGISTER_DECLINE',
         details: {
           store_name: null,
           service_name: null,
@@ -706,8 +744,15 @@ app.post('/twilio-webhook', async (req, res) => {
                     .select()
                   if (error) throw error
 
-                  responseMessage = `all set ${name} your ${state.serviceName} at ${state.storeName} is booked for ${apptStart.toLocaleDateString()} at ${apptStart.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })} looking forward to seeing you`
-                  conversationState.delete(from)
+                  state.step = 'ask_to_register'
+                  state.appointmentDetails = {
+                    storeId: state.storeId,
+                    storeName: state.storeName,
+                    serviceName: state.serviceName,
+                    apptStart: apptStart.toISOString()
+                  }
+                  conversationState.set(from, state)
+                  responseMessage = `all set ${name} your ${state.serviceName} at ${state.storeName} is booked for ${apptStart.toLocaleDateString()} at ${apptStart.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })} would you like to save your details for easier bookings next time just say YES or NO`
                 }
               }
             } else {
@@ -725,7 +770,7 @@ app.post('/twilio-webhook', async (req, res) => {
           if (phoneNumber !== fromWithoutPrefix) {
             responseMessage = `the phone number you gave ${phoneNumber} doesn’t match the one you’re messaging from ${fromWithoutPrefix} please use the same number or let me know if this is on purpose`
           } else {
-            const { clientId } = await createClientRecord(from, clientName)
+            const { clientId, globalClientId } = await createClientRecord(from, clientName)
             const { data, error } = await supabase
               .schema('appointments')
               .from('appointments')
@@ -742,11 +787,55 @@ app.post('/twilio-webhook', async (req, res) => {
             if (error) throw error
 
             name = clientName
-            responseMessage = `wonderful ${name} your ${state.appointmentDetails.serviceName} at ${state.appointmentDetails.storeName} is booked for ${new Date(state.appointmentDetails.apptStart).toLocaleDateString()} at ${new Date(state.appointmentDetails.apptStart).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })} see you soon`
-            conversationState.delete(from)
+            state.globalClientId = globalClientId
+            state.step = 'ask_to_register'
+            conversationState.set(from, state)
+            responseMessage = `wonderful ${name} your ${state.appointmentDetails.serviceName} at ${state.appointmentDetails.storeName} is booked for ${new Date(state.appointmentDetails.apptStart).toLocaleDateString()} at ${new Date(state.appointmentDetails.apptStart).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })} would you like to save your details for easier bookings next time just say YES or NO`
           }
         } else {
           responseMessage = `sorry ${name} I didn’t get that please give your name and phone number like this Name Number for example John 96460132`
+        }
+      } else if (state.step === 'ask_to_register') {
+        if (intent === 'REGISTER_CONFIRM') {
+          state.step = 'collect_registration_details'
+          conversationState.set(from, state)
+          responseMessage = `great ${name} let’s get your details saved please share your preferred name if different from ${name} and your gender if you’d like for example Preferred Name Gender like Jane female or just say skip to keep it as is`
+        } else if (intent === 'REGISTER_DECLINE') {
+          responseMessage = `no worries ${name} your booking is still confirmed see you soon`
+          conversationState.delete(from)
+        } else {
+          responseMessage = `would you like to save your details for easier bookings next time just say YES or NO`
+        }
+      } else if (state.step === 'collect_registration_details') {
+        if (reply.toLowerCase() === 'skip') {
+          if (state.globalClientId && state.appointmentDetails.storeId) {
+            await linkClientToStore(state.globalClientId, state.appointmentDetails.storeId)
+          }
+          responseMessage = `all done ${name} your details are saved see you at your appointment`
+          conversationState.delete(from)
+        } else {
+          const detailsMatch = reply.match(/([a-zA-Z\s]+)(?:,\s*(male|female|other))?/i)
+          if (detailsMatch) {
+            const preferredName = detailsMatch[1].trim()
+            const gender = detailsMatch[2] ? detailsMatch[2].toLowerCase() : null
+            const { error } = await supabase
+              .schema('clients')
+              .from('global_clients')
+              .update({
+                preferred_name: preferredName !== name ? preferredName : null,
+                gender: gender
+              })
+              .eq('global_client_id', state.globalClientId)
+            if (error) throw error
+
+            if (state.globalClientId && state.appointmentDetails.storeId) {
+              await linkClientToStore(state.globalClientId, state.appointmentDetails.storeId)
+            }
+            responseMessage = `thanks ${preferredName || name} your details are saved see you at your appointment`
+            conversationState.delete(from)
+          } else {
+            responseMessage = `please share your preferred name if different from ${name} and your gender if you’d like for example Preferred Name Gender like Jane female or just say skip to keep it as is`
+          }
         }
       } else if (state.step === 'store_info') {
         if (!state.storeName) {
@@ -920,11 +1009,11 @@ app.post('/twilio-webhook', async (req, res) => {
       }
     } else {
       if (intent === 'GREETING') {
-        responseMessage = `hello ${name} welcome to Idle salon how may I help you`
+        responseMessage = `hello ${name} how may I help you`
       } else if (intent === 'BOOK_APPOINTMENT') {
         if (!clientData) {
-          conversationState.set(from, { step: 'collect_client_details', from, intent: 'BOOK_APPOINTMENT' })
-          responseMessage = `okay ${name} can I get your details please your phone number and name`
+          conversationState.set(from, { step: 'book_appointment', from, intent: 'BOOK_APPOINTMENT' })
+          responseMessage = `I’d be happy to book an appointment for you ${name} which store would you like to book at maybe Idle or Glamour Salon`
         } else {
           conversationState.set(from, { step: 'book_appointment' })
           responseMessage = `I’d be happy to book an appointment for you ${name} which store would you like to book at maybe Idle or Glamour Salon`
@@ -1031,18 +1120,7 @@ app.post('/twilio-webhook', async (req, res) => {
         conversationState.set(from, { step: 'package_inquiry', phoneNumberRequested: false })
         responseMessage = `I’d love to help with your package details ${name} can you please give me your registered phone number like 96460132 so I can look it up`
       } else {
-        const lowerMessage = reply.toLowerCase()
-        if (lowerMessage.includes('book') || lowerMessage.includes('appointment') || lowerMessage.includes('schedule') || lowerMessage.includes('service') || lowerMessage.includes('make a booking')) {
-          if (!clientData) {
-            conversationState.set(from, { step: 'collect_client_details', from, intent: 'BOOK_APPOINTMENT' })
-            responseMessage = `okay ${name} can I get your details please your phone number and name`
-          } else {
-            conversationState.set(from, { step: 'book_appointment' })
-            responseMessage = `I’d be happy to book an appointment for you ${name} which store would you like to book at maybe Idle or Glamour Salon`
-          }
-        } else {
-          responseMessage = `hello ${name} welcome to Idle salon how may I help you`
-        }
+        responseMessage = `hello ${name} how may I help you`
       }
     }
 
