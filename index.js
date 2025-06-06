@@ -386,8 +386,8 @@ async function classifyIntent(message) {
       - GREETING (e.g. "hello" "hi" "hey there" "good morning")
       - BOOK_APPOINTMENT (e.g. "i need to book an appointment" "i want a haircut" "i'd like to schedule a service" "can i book a manicure" "book me for a trim")
       - CHANGE_APPOINTMENT (e.g. "i want to change my booking" "can i reschedule" "move my appointment" "change my time slot")
-      - STORE_INFO (e.g. "can i get more details about a salon" "what are your hours" "operating hours for Idle" "address of Glamour Salon" "services at Idle" "what do you offer")
-      - VIEW_APPOINTMENTS (e.g. "can i see my upcoming appointments" "what are my bookings" "show my appointments" "what's my schedule" "do i have any appointments")
+      - STORE_INFO (e.g. "can i get more details about a salon" "what are your hours" "operating hours for Idle" "address of Glamour Salon" "services at Idle" "what do you offer" "can u get store details for me")
+      - VIEW_APPOINTMENTS (e.g. "can i see my upcoming appointments" "what are my bookings" "show my appointments" "what's my schedule" "do i have any appointments" "i want to see upcoming appointments")
       - CONFIRM_APPOINTMENT (e.g. "YES" "yes" "confirm" "i confirm")
       - CANCEL_APPOINTMENT (e.g. "NO" "no" "cancel" "i want to cancel")
       - PACKAGE_INQUIRY (e.g. "can you tell me about my package" "is my package still active" "how many sessions are left" "package details" "what's my package status")
@@ -396,7 +396,7 @@ async function classifyIntent(message) {
       - UNKNOWN (if the intent doesn't match any of the above)
 
       Additionally extract any relevant details such as
-      - store_name (e.g. "Idle" "Glamour Salon")
+      - store_name (e.g. "Idle" "Glamour Salon" "Idle salon")
       - service_name (e.g. "haircut" "manicure" or informal terms like "cut" or "nails" that can be mapped to services)
       - date (e.g. "26/05/2025" "tomorrow" "next Friday" "this Friday")
       - time (e.g. "14:00" "2 PM" "12:34 AM" "noon" "10 am")
@@ -460,7 +460,7 @@ async function classifyIntent(message) {
           info_type: null
         }
       }
-    } else if (lowerMessage.includes('details') || lowerMessage.includes('info') || lowerMessage.includes('hours') || lowerMessage.includes('address') || lowerMessage.includes('services') || lowerMessage.includes('what do you offer')) {
+    } else if (lowerMessage.includes('details') || lowerMessage.includes('info') || lowerMessage.includes('hours') || lowerMessage.includes('address') || lowerMessage.includes('services') || lowerMessage.includes('what do you offer') || lowerMessage.includes('store details')) {
       let infoType = null
       if (lowerMessage.includes('hours') || lowerMessage.includes('schedule')) infoType = 'hours'
       else if (lowerMessage.includes('address')) infoType = 'address'
@@ -609,6 +609,11 @@ app.post('/twilio-webhook', async (req, res) => {
 
     const { intent, details } = await classifyIntent(reply)
 
+    // Reset state if intent changes to a new top-level intent
+    if (conversationState.has(from) && ['GREETING', 'BOOK_APPOINTMENT', 'VIEW_APPOINTMENTS', 'CHANGE_APPOINTMENT', 'STORE_INFO', 'PACKAGE_INQUIRY'].includes(intent)) {
+      conversationState.delete(from)
+    }
+
     if (conversationState.has(from)) {
       const state = conversationState.get(from)
       if (state.step === 'selectOption') {
@@ -647,7 +652,7 @@ app.post('/twilio-webhook', async (req, res) => {
               .schema('store_management')
               .from('stores')
               .select('store_id store_name')
-              .ilike('store_name', `%${details.store_name}%`)
+              .ilike('store_name', details.store_name.replace(' salon', '').trim())
               .single()
             if (storeError || !storeRecord) {
               responseMessage = `sorry ${name} I couldn't find a store named ${details.store_name} can you try again`
@@ -771,26 +776,112 @@ app.post('/twilio-webhook', async (req, res) => {
             responseMessage = `the phone number you gave ${phoneNumber} doesn’t match the one you’re messaging from ${fromWithoutPrefix} please use the same number or let me know if this is on purpose`
           } else {
             const { clientId, globalClientId } = await createClientRecord(from, clientName)
-            const { data, error } = await supabase
-              .schema('appointments')
-              .from('appointments')
-              .insert({
-                store_id: state.appointmentDetails.storeId,
-                assignment_id: 'b32e113a-0bdc-46ee-95ab-f7260abda24e',
-                client_id: clientId,
-                service_id: state.appointmentDetails.serviceId,
-                appt_start: state.appointmentDetails.apptStart,
-                appt_end: state.appointmentDetails.apptEnd,
-                prepayment_amt: 50
-              })
-              .select()
-            if (error) throw error
+            if (state.intent === 'VIEW_APPOINTMENTS') {
+              const { data: appointments, error: apptError } = await supabase
+                .schema('appointments')
+                .from('appointments')
+                .select('appt_id appt_start service_id store_id')
+                .eq('client_id', clientId)
+              if (apptError) throw apptError
 
-            name = clientName
-            state.globalClientId = globalClientId
-            state.step = 'ask_to_register'
-            conversationState.set(from, state)
-            responseMessage = `wonderful ${name} your ${state.appointmentDetails.serviceName} at ${state.appointmentDetails.storeName} is booked for ${new Date(state.appointmentDetails.apptStart).toLocaleDateString()} at ${new Date(state.appointmentDetails.apptStart).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })} would you like to save your details for easier bookings next time just say YES or NO`
+              name = clientName
+              if (!appointments || appointments.length === 0) {
+                responseMessage = `hi ${name} looks like you don’t have any upcoming appointments would you like to book one now`
+              } else {
+                const apptDetails = await Promise.all(appointments.map(async (appt) => {
+                  const { data: store } = await supabase
+                    .schema('store_management')
+                    .from('stores')
+                    .select('store_name')
+                    .eq('store_id', appt.store_id)
+                    .single()
+                  return `${appt.service_id} at ${store.store_name} on ${new Date(appt.appt_start).toLocaleDateString()} at ${new Date(appt.appt_start).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}`
+                }))
+                responseMessage = `hi ${name} here are your upcoming appointments\n${apptDetails.join('\n')}`
+              }
+              conversationState.delete(from)
+            } else if (state.intent === 'CHANGE_APPOINTMENT') {
+              const { data: apptData, error: apptError } = await supabase
+                .schema('appointments')
+                .from('appointments')
+                .select('appt_id appt_start appt_end service_id')
+                .eq('client_id', clientId)
+                .order('appt_start', { ascending: false })
+                .limit(1)
+                .single()
+              if (apptError || !apptData) {
+                responseMessage = `sorry ${name} I couldn’t find an appointment to change would you like to book a new one instead`
+                conversationState.delete(from)
+              } else {
+                state.step = 'change_appointment'
+                state.clientId = clientId
+                conversationState.set(from, state)
+                responseMessage = `let’s reschedule your ${apptData.service_id} appointment ${name} when would you like it just say something like tomorrow at 2 PM or this Friday at 10 am`
+              }
+            } else if (state.intent === 'CONFIRM_APPOINTMENT') {
+              const { data: apptData, error: apptError } = await supabase
+                .schema('appointments')
+                .from('appointments')
+                .select('appt_id appt_start service_id')
+                .eq('client_id', clientId)
+                .order('appt_start', { ascending: false })
+                .limit(1)
+                .single()
+              if (apptError || !apptData) {
+                responseMessage = `sorry ${name} I couldn’t find an appointment to confirm would you like to book a new one`
+                conversationState.delete(from)
+              } else {
+                await supabase
+                  .schema('appointments')
+                  .from('appointments')
+                  .update({ status: 'confirmed' })
+                  .eq('appt_id', apptData.appt_id)
+                responseMessage = `thanks ${name} your ${apptData.service_id} appointment on ${new Date(apptData.appt_start).toLocaleDateString()} at ${new Date(apptData.appt_start).toLocaleTimeString()} is confirmed`
+                conversationState.delete(from)
+              }
+            } else if (state.intent === 'CANCEL_APPOINTMENT') {
+              const { data: apptData, error: apptError } = await supabase
+                .schema('appointments')
+                .from('appointments')
+                .select('appt_id appt_start service_id')
+                .eq('client_id', clientId)
+                .order('appt_start', { ascending: false })
+                .limit(1)
+                .single()
+              if (apptError || !apptData) {
+                responseMessage = `sorry ${name} I couldn’t find an appointment to cancel would you like to book a new one`
+                conversationState.delete(from)
+              } else {
+                await supabase
+                  .schema('appointments')
+                  .from('appointments')
+                  .delete()
+                  .eq('appt_id', apptData.appt_id)
+                responseMessage = `sorry to hear that ${name} your ${apptData.service_id} appointment on ${new Date(apptData.appt_start).toLocaleDateString()} at ${new Date(apptData.appt_start).toLocaleTimeString()} has been canceled`
+                conversationState.delete(from)
+              }
+            } else {
+              const { data, error } = await supabase
+                .schema('appointments')
+                .from('appointments')
+                .insert({
+                  store_id: state.appointmentDetails.storeId,
+                  assignment_id: 'b32e113a-0bdc-46ee-95ab-f7260abda24e',
+                  client_id: clientId,
+                  service_id: state.appointmentDetails.serviceId,
+                  appt_start: state.appointmentDetails.apptStart,
+                  appt_end: state.appointmentDetails.apptEnd,
+                  prepayment_amt: 50
+                })
+                .select()
+              if (error) throw error
+
+              name = clientName
+              state.globalClientId = globalClientId
+              state.step = 'ask_to_register'
+              conversationState.set(from, state)
+              responseMessage = `wonderful ${name} your ${state.appointmentDetails.serviceName} at ${state.appointmentDetails.storeName} is booked for ${new Date(state.appointmentDetails.apptStart).toLocaleDateString()} at ${new Date(state.appointmentDetails.apptStart).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })} would you like to save your details for easier bookings next time just say YES or NO`
+            }
           }
         } else {
           responseMessage = `sorry ${name} I didn’t get that please give your name and phone number like this Name Number for example John 96460132`
@@ -844,7 +935,7 @@ app.post('/twilio-webhook', async (req, res) => {
               .schema('store_management')
               .from('stores')
               .select('store_id store_name')
-              .ilike('store_name', `%${details.store_name}%`)
+              .ilike('store_name', details.store_name.replace(' salon', '').trim())
               .single()
             if (storeError || !storeRecord) {
               responseMessage = `sorry ${name} I couldn't find a store named ${details.store_name} can you try again`
@@ -859,48 +950,13 @@ app.post('/twilio-webhook', async (req, res) => {
             responseMessage = `which store would you like more details about maybe Idle or Glamour Salon`
           }
         }
-      } else if (state.step === 'view_appointments') {
-        const nameMatch = reply.match(/([a-zA-Z\s]+),\s*(\d+)/)
-        if (nameMatch) {
-          const clientName = nameMatch[1].trim()
-          const phoneNumber = nameMatch[2].trim()
-          if (phoneNumber !== fromWithoutPrefix) {
-            responseMessage = `the phone number you gave ${phoneNumber} doesn’t match the one you’re messaging from ${fromWithoutPrefix} please use the same number or let me know if this is on purpose`
-          } else {
-            const { clientId } = await createClientRecord(from, clientName)
-            const { data: appointments, error: apptError } = await supabase
-              .schema('appointments')
-              .from('appointments')
-              .select('appt_id appt_start service_id store_id')
-              .eq('client_id', clientId)
-            if (apptError) throw apptError
-
-            name = clientName
-            if (!appointments || appointments.length === 0) {
-              responseMessage = `hi ${name} looks like you don’t have any upcoming appointments would you like to book one now`
-            } else {
-              const apptDetails = await Promise.all(appointments.map(async (appt) => {
-                const { data: store } = await supabase
-                  .schema('store_management')
-                  .from('stores')
-                  .select('store_name')
-                  .eq('store_id', appt.store_id)
-                  .single()
-                return `${appt.service_id} at ${store.store_name} on ${new Date(appt.appt_start).toLocaleDateString()} at ${new Date(appt.appt_start).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}`
-              }))
-              responseMessage = `hi ${name} here are your upcoming appointments\n${apptDetails.join('\n')}`
-            }
-            conversationState.delete(from)
-          }
-        } else {
-          responseMessage = `sorry ${name} I didn’t get that please give your name and phone number like this Name Number for example John 96460132`
-        }
       } else if (state.step === 'change_appointment') {
+        const clientId = state.clientId || clientLink.client_id
         const { data: apptData, error: apptError } = await supabase
           .schema('appointments')
           .from('appointments')
           .select('appt_id appt_start appt_end service_id')
-          .eq('client_id', clientLink.client_id)
+          .eq('client_id', clientId)
           .order('appt_start', { ascending: false })
           .limit(1)
           .single()
@@ -1009,18 +1065,13 @@ app.post('/twilio-webhook', async (req, res) => {
       }
     } else {
       if (intent === 'GREETING') {
-        responseMessage = `hello ${name} how may I help you`
+        responseMessage = `hello ${name} how can I assist you today you can book an appointment change an appointment get store info or check your package details just let me know what you'd like`
       } else if (intent === 'BOOK_APPOINTMENT') {
-        if (!clientData) {
-          conversationState.set(from, { step: 'book_appointment', from, intent: 'BOOK_APPOINTMENT' })
-          responseMessage = `I’d be happy to book an appointment for you ${name} which store would you like to book at maybe Idle or Glamour Salon`
-        } else {
-          conversationState.set(from, { step: 'book_appointment' })
-          responseMessage = `I’d be happy to book an appointment for you ${name} which store would you like to book at maybe Idle or Glamour Salon`
-        }
+        conversationState.set(from, { step: 'book_appointment' })
+        responseMessage = `I’d be happy to book an appointment for you ${name} which store would you like to book at maybe Idle or Glamour Salon`
       } else if (intent === 'VIEW_APPOINTMENTS') {
         if (!clientData) {
-          conversationState.set(from, { step: 'view_appointments', from })
+          conversationState.set(from, { step: 'collect_client_details', from, intent: 'VIEW_APPOINTMENTS' })
           responseMessage = `okay ${name} can I get your details please your phone number and name`
         } else {
           const { data: appointments, error: apptError } = await supabase
@@ -1028,6 +1079,7 @@ app.post('/twilio-webhook', async (req, res) => {
             .from('appointments')
             .select('appt_id appt_start service_id store_id')
             .eq('client_id', clientLink.client_id)
+            .gt('appt_start', new Date().toISOString()) // Only future appointments
           if (apptError) throw apptError
 
           if (!appointments || appointments.length === 0) {
@@ -1120,7 +1172,7 @@ app.post('/twilio-webhook', async (req, res) => {
         conversationState.set(from, { step: 'package_inquiry', phoneNumberRequested: false })
         responseMessage = `I’d love to help with your package details ${name} can you please give me your registered phone number like 96460132 so I can look it up`
       } else {
-        responseMessage = `hello ${name} how may I help you`
+        responseMessage = `hello ${name} how can I assist you today you can book an appointment change an appointment get store info or check your package details just let me know what you'd like`
       }
     }
 
