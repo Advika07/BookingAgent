@@ -188,7 +188,7 @@ const sendReminders = async () => {
           })
           console.log(`Reminder sent to ${name} at ${appt.phone_number}: SID ${result.sid}`)
         } catch (error) {
-          console.error(`Failed to send reminder to ${appt.client_name}:`, error.message)
+          console.error(`Failed to send reminder to ${appt.client_name}: ${error.message}`)
         }
       }
     }
@@ -400,35 +400,41 @@ function suggestNextAvailableTime(storeId, requestedTime, serviceDuration, opera
   return null
 }
 
-async function classifyIntent(message) {
+async function classifyIntent(message, currentState = {}) {
   try {
-    console.log('Classifying intent for message:', message)
+    console.log('Classifying intent for message:', message, 'with current state:', currentState)
     const prompt = `
-      You are a helpful assistant for Glamour Salon analyze the customer's message and classify their intent the possible intents are
-      - GREETING (e.g. "hello" "hi" "hey there" "good morning")
-      - BOOK_APPOINTMENT (e.g. "i need to book an appointment" "i want a haircut" "i'd like to schedule a service" "can i book a manicure" "book me for a trim")
-      - CHANGE_APPOINTMENT (e.g. "i want to change my booking" "can i reschedule" "move my appointment" "change my time slot")
-      - STORE_INFO (e.g. "can i get more details about a salon" "what are your hours" "operating hours for Idle" "address of Glamour Salon" "services at Idle" "what do you offer" "can u get store details for me")
-      - VIEW_APPOINTMENTS (e.g. "can i see my upcoming appointments" "what are my bookings" "show my appointments" "what's my schedule" "do i have any appointments" "i want to see upcoming appointments")
-      - CONFIRM_APPOINTMENT (e.g. "YES" "yes" "confirm" "i confirm")
-      - CANCEL_APPOINTMENT (e.g. "NO" "no" "cancel" "i want to cancel")
-      - PACKAGE_INQUIRY (e.g. "can you tell me about my package" "is my package still active" "how many sessions are left" "package details" "what's my package status")
-      - REGISTER_CONFIRM (e.g. "YES" "yes" "sure" "okay" for confirming registration)
-      - REGISTER_DECLINE (e.g. "NO" "no" "not now" for declining registration)
+      You are a helpful assistant for Glamour Salon. Analyze the customer's message and classify their intent, considering the current conversation state: ${JSON.stringify(currentState)}. The possible intents are:
+      - GREETING (e.g., "hello", "hi", "hey there", "good morning")
+      - BOOK_APPOINTMENT (e.g., "i need to book an appointment", "i want a haircut", "i'd like to schedule a service", "can i book a manicure", "book me for a trim")
+      - CHANGE_APPOINTMENT (e.g., "i want to change my booking", "can i reschedule", "move my appointment", "change my time slot")
+      - STORE_INFO (e.g., "can i get more details about a salon", "what are your hours", "operating hours for Idle", "address of Glamour Salon", "services at Idle", "what do you offer", "can u get store details for me")
+      - VIEW_APPOINTMENTS (e.g., "can i see my upcoming appointments", "what are my bookings", "show my appointments", "what's my schedule", "do i have any appointments", "i want to see upcoming appointments")
+      - CONFIRM_APPOINTMENT (e.g., "YES", "yes", "confirm", "i confirm")
+      - CANCEL_APPOINTMENT (e.g., "NO", "no", "cancel", "i want to cancel")
+      - PACKAGE_INQUIRY (e.g., "can you tell me about my package", "is my package still active", "how many sessions are left", "package details", "what's my package status")
+      - REGISTER_CONFIRM (e.g., "YES", "yes", "sure", "okay" for confirming registration)
+      - REGISTER_DECLINE (e.g., "NO", "no", "not now" for declining registration)
       - UNKNOWN (if the intent doesn't match any of the above)
 
-      Additionally extract any relevant details such as
-      - store_name (e.g. "Idle" "Glamour Salon" "Idle salon")
-      - service_name (e.g. "haircut" "manicure" or informal terms like "cut" or "nails" that can be mapped to services)
-      - date (e.g. "26/05/2025" "tomorrow" "next Friday" "this Friday")
-      - time (e.g. "14:00" "2 PM" "12:34 AM" "noon" "10 am")
-      - info_type (for STORE_INFO intent "address" for address-related requests "hours" for operating hours or schedule requests "services" for service-related requests)
+      **Contextual Rules**:
+      - If the current state has step 'book_appointment' and the message is a store name (e.g., "Idle", "Glamour Salon"), classify the intent as BOOK_APPOINTMENT and extract the store_name.
+      - If the current state has step 'store_info' and the message is a store name (e.g., "Idle", "Glamour Salon"), classify the intent as STORE_INFO and extract the store_name.
+      - If the current state has step 'book_appointment_service' and the message contains a service name (e.g., "haircut", "manicure"), classify the intent as BOOK_APPOINTMENT and extract the service_name.
+      - If the current state has step 'book_appointment_datetime' and the message contains a date or time (e.g., "tomorrow at 2 PM"), classify the intent as BOOK_APPOINTMENT and extract the date and time.
 
-      Focus on identifying the primary service name even if the message includes extra words (e.g. "haircut maybe" should be "haircut") or informal terms (e.g. "cut" should be interpreted as "haircut" "nails" as "manicure") if unsure prioritize the most likely service based on context
+      Additionally extract any relevant details such as:
+      - store_name (e.g., "Idle", "Glamour Salon", "Idle salon")
+      - service_name (e.g., "haircut", "manicure" or informal terms like "cut" or "nails" that can be mapped to services)
+      - date (e.g., "26/05/2025", "tomorrow", "next Friday", "this Friday")
+      - time (e.g., "14:00", "2 PM", "12:34 AM", "noon", "10 am")
+      - info_type (for STORE_INFO intent: "address" for address-related requests, "hours" for operating hours or schedule requests, "services" for service-related requests)
+
+      Focus on identifying the primary service name even if the message includes extra words (e.g., "haircut maybe" should be "haircut") or informal terms (e.g., "cut" should be interpreted as "haircut", "nails" as "manicure"). If unsure, prioritize the most likely service based on context.
 
       Customer message: "${message}"
 
-      Respond in JSON format
+      Respond in JSON format:
       {
         "intent": "INTENT_NAME",
         "details": {
@@ -462,7 +468,53 @@ async function classifyIntent(message) {
   } catch (error) {
     console.error('DeepSeek intent classification error:', error.message)
     const lowerMessage = message.toLowerCase()
-    if (lowerMessage.includes('book') || lowerMessage.includes('appointment') || lowerMessage.includes('schedule') || lowerMessage.includes('service') || lowerMessage.includes('make a booking')) {
+
+    // Fallback logic with context
+    if (currentState.step === 'book_appointment' && (lowerMessage.includes('idle') || lowerMessage.includes('glamour'))) {
+      return {
+        intent: 'BOOK_APPOINTMENT',
+        details: {
+          store_name: lowerMessage.includes('idle') ? 'Idle' : 'Glamour Salon',
+          service_name: null,
+          date: null,
+          time: null,
+          info_type: null
+        }
+      }
+    } else if (currentState.step === 'store_info' && (lowerMessage.includes('idle') || lowerMessage.includes('glamour'))) {
+      return {
+        intent: 'STORE_INFO',
+        details: {
+          store_name: lowerMessage.includes('idle') ? 'Idle' : 'Glamour Salon',
+          service_name: null,
+          date: null,
+          time: null,
+          info_type: null
+        }
+      }
+    } else if (currentState.step === 'book_appointment_service' && (lowerMessage.includes('haircut') || lowerMessage.includes('manicure') || lowerMessage.includes('cut') || lowerMessage.includes('nails'))) {
+      return {
+        intent: 'BOOK_APPOINTMENT',
+        details: {
+          store_name: null,
+          service_name: lowerMessage.includes('haircut') || lowerMessage.includes('cut') ? 'haircut' : 'manicure',
+          date: null,
+          time: null,
+          info_type: null
+        }
+      }
+    } else if (currentState.step === 'book_appointment_datetime' && (lowerMessage.includes('tomorrow') || lowerMessage.includes('friday') || lowerMessage.match(/\d{1,2}(?::\d{2})?\s*(am|pm)/i))) {
+      return {
+        intent: 'BOOK_APPOINTMENT',
+        details: {
+          store_name: null,
+          service_name: null,
+          date: lowerMessage.includes('tomorrow') ? 'tomorrow' : (lowerMessage.includes('friday') ? 'Friday' : null),
+          time: lowerMessage.match(/\d{1,2}(?::\d{2})?\s*(am|pm)/i)?.[0] || null,
+          info_type: null
+        }
+      }
+    } else if (lowerMessage.includes('book') || lowerMessage.includes('appointment') || lowerMessage.includes('schedule') || lowerMessage.includes('service') || lowerMessage.includes('make a booking')) {
       return {
         intent: 'BOOK_APPOINTMENT',
         details: {
@@ -631,14 +683,25 @@ app.post('/twilio-webhook', async (req, res) => {
     let responseMessage
     let name = clientData ? (clientData.preferred_name || clientData.client_name || 'there') : 'there'
 
-    const { intent, details } = await classifyIntent(reply)
+    // Get current state before intent classification
+    let currentState = conversationState.get(from) || {}
+    console.log('Current state before intent classification:', currentState)
 
-    // Reset state if intent changes to a new top-level intent
-    console.log('Current state before reset:', conversationState.get(from))
+    // Classify intent with current state context
+    const { intent, details } = await classifyIntent(reply, currentState)
+
+    // Reset state only if intent changes to a new top-level intent
     console.log('Detected intent:', intent)
     if (conversationState.has(from) && ['GREETING', 'BOOK_APPOINTMENT', 'VIEW_APPOINTMENTS', 'CHANGE_APPOINTMENT', 'STORE_INFO', 'PACKAGE_INQUIRY'].includes(intent)) {
-      console.log('Resetting conversation state for new intent:', intent)
-      conversationState.delete(from)
+      if (currentState.intent !== intent) {
+        console.log('Resetting conversation state for new intent:', intent)
+        conversationState.delete(from)
+        currentState = { intent }
+      } else {
+        console.log('No state reset needed; continuing with same intent:', intent)
+      }
+    } else {
+      currentState = { intent }
     }
 
     if (conversationState.has(from)) {
@@ -676,7 +739,7 @@ app.post('/twilio-webhook', async (req, res) => {
       } else if (state.step === 'book_appointment') {
         if (!state.storeName) {
           if (details.store_name) {
-            console.log('Searching for store:', details.store_name)
+            console.log('Searching for store in book_appointment:', details.store_name)
             const { data: storeRecord, error: storeError } = await supabase
               .schema('store_management')
               .from('stores')
@@ -684,11 +747,17 @@ app.post('/twilio-webhook', async (req, res) => {
               .ilike('store_name', `%${details.store_name.replace(' salon', '').trim()}%`)
               .single()
             if (storeError || !storeRecord) {
-              console.error('Store search error:', storeError?.message)
-              console.log('Store not found in database:', details.store_name)
+              console.error('Store search error in book_appointment:', storeError?.message || 'No store found')
+              console.log('Store not found in database in book_appointment:', details.store_name)
+              // Debug: Fetch all stores to see what's in the database
+              const { data: allStores, error: allStoresError } = await supabase
+                .schema('store_management')
+                .from('stores')
+                .select('store_id store_name')
+              console.log('All stores in database:', allStores, 'Error:', allStoresError?.message)
               responseMessage = `sorry ${name} I couldn't find a store named ${details.store_name} can you try again`
             } else {
-              console.log('Store found:', storeRecord)
+              console.log('Store found in book_appointment:', storeRecord)
               state.storeName = storeRecord.store_name
               state.storeId = storeRecord.store_id
               state.step = 'book_appointment_service'
@@ -971,8 +1040,14 @@ app.post('/twilio-webhook', async (req, res) => {
               .ilike('store_name', `%${details.store_name.replace(' salon', '').trim()}%`)
               .single()
             if (storeError || !storeRecord) {
-              console.error('Store search error in store_info:', storeError?.message)
+              console.error('Store search error in store_info:', storeError?.message || 'No store found')
               console.log('Store not found in database in store_info:', details.store_name)
+              // Debug: Fetch all stores to see what's in the database
+              const { data: allStores, error: allStoresError } = await supabase
+                .schema('store_management')
+                .from('stores')
+                .select('store_id store_name')
+              console.log('All stores in database:', allStores, 'Error:', allStoresError?.message)
               responseMessage = `sorry ${name} I couldn't find a store named ${details.store_name} can you try again`
             } else {
               console.log('Store found in store_info:', storeRecord)
@@ -1103,7 +1178,7 @@ app.post('/twilio-webhook', async (req, res) => {
       if (intent === 'GREETING') {
         responseMessage = `hello ${name} how can I assist you today you can book an appointment change an appointment get store info or check your package details just let me know what you'd like`
       } else if (intent === 'BOOK_APPOINTMENT') {
-        conversationState.set(from, { step: 'book_appointment' })
+        conversationState.set(from, { step: 'book_appointment', intent: 'BOOK_APPOINTMENT' })
         responseMessage = `I’d be happy to book an appointment for you ${name} which store would you like to book at maybe Idle or Glamour Salon`
       } else if (intent === 'VIEW_APPOINTMENTS') {
         if (!clientData) {
@@ -1149,12 +1224,12 @@ app.post('/twilio-webhook', async (req, res) => {
           if (apptError || !apptData) {
             responseMessage = `sorry ${name} I couldn’t find an appointment to change would you like to book a new one instead`
           } else {
-            conversationState.set(from, { step: 'change_appointment' })
+            conversationState.set(from, { step: 'change_appointment', intent: 'CHANGE_APPOINTMENT' })
             responseMessage = `let’s reschedule your ${apptData.service_id} appointment ${name} when would you like it just say something like tomorrow at 2 PM or this Friday at 10 am`
           }
         }
       } else if (intent === 'STORE_INFO') {
-        conversationState.set(from, { step: 'store_info' })
+        conversationState.set(from, { step: 'store_info', intent: 'STORE_INFO' })
         responseMessage = `I’d be happy to help with that ${name} which store would you like more details about maybe Idle or Glamour Salon`
       } else if (intent === 'CONFIRM_APPOINTMENT') {
         if (!clientData) {
@@ -1205,7 +1280,7 @@ app.post('/twilio-webhook', async (req, res) => {
           }
         }
       } else if (intent === 'PACKAGE_INQUIRY') {
-        conversationState.set(from, { step: 'package_inquiry', phoneNumberRequested: false })
+        conversationState.set(from, { step: 'package_inquiry', intent: 'PACKAGE_INQUIRY', phoneNumberRequested: false })
         responseMessage = `I’d love to help with your package details ${name} can you please give me your registered phone number like 96460132 so I can look it up`
       } else {
         responseMessage = `hello ${name} how can I assist you today you can book an appointment change an appointment get store info or check your package details just let me know what you'd like`
