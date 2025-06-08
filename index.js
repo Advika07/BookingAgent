@@ -228,16 +228,25 @@ app.post('/book-appointment', async (req, res) => {
   }
 })
 
-async function rephraseWithDeepSeek(message, name) {
+async function rephraseWithDeepSeek(message, name, storeName = null) {
   try {
     console.log('Rephrasing message:', message)
     if (!message) {
       return `hi ${name} I don't have enough details yet please let me know what you'd like to do and I'll help you`
     }
 
-    const prompt = `
+    let prompt = `
       You are a friendly and professional assistant for Glamour Salon rephrase the following message to sound warm natural and human-like while addressing the customer by their name (${name}) keep the tone polite and conversational as if you're speaking directly to the customer do not change the core meaning of the message do not include any explanatory notes brackets emojis or unnecessary punctuation
+    `
 
+    // Add storeName to the prompt if provided to ensure correct store reference
+    if (storeName) {
+      prompt += `
+      The message may reference a store. Ensure that any reference to a store uses the name "${storeName}" instead of any other store name like "Glamour Salon" unless explicitly intended.
+      `
+    }
+
+    prompt += `
       Message: "${message}"
 
       Rephrased message:
@@ -253,7 +262,10 @@ async function rephraseWithDeepSeek(message, name) {
       max_tokens: 150,
     })
 
-    return completion.choices[0].message.content.trim()
+    let rephrased = completion.choices[0].message.content.trim()
+    // Ensure the name placeholder is correctly replaced
+    rephrased = rephrased.replace(/\[Name\]/g, name)
+    return rephrased
   } catch (error) {
     console.error('DeepSeek rephrasing error:', error.message)
     return message || `hi ${name} I'm having trouble with your request please try again or let me know what you need`
@@ -422,13 +434,14 @@ async function classifyIntent(message, currentState = {}) {
       - If the current state has step 'store_info' and the message is a store name (e.g., "Idle", "Glamour Salon"), classify the intent as STORE_INFO and extract the store_name.
       - If the current state has step 'book_appointment_service' and the message contains a service name (e.g., "haircut", "manicure"), classify the intent as BOOK_APPOINTMENT and extract the service_name.
       - If the current state has step 'book_appointment_datetime' and the message contains a date or time (e.g., "tomorrow at 2 PM"), classify the intent as BOOK_APPOINTMENT and extract the date and time.
+      - If the current state has step 'selectOption' and the message contains keywords like "address", "hours", "services", or "packages", classify the intent as STORE_INFO and set the info_type accordingly.
 
       Additionally extract any relevant details such as:
       - store_name (e.g., "Idle", "Glamour Salon", "Idle salon")
       - service_name (e.g., "haircut", "manicure" or informal terms like "cut" or "nails" that can be mapped to services)
       - date (e.g., "26/05/2025", "tomorrow", "next Friday", "this Friday")
       - time (e.g., "14:00", "2 PM", "12:34 AM", "noon", "10 am")
-      - info_type (for STORE_INFO intent: "address" for address-related requests, "hours" for operating hours or schedule requests, "services" for service-related requests)
+      - info_type (for STORE_INFO intent: "address" for address-related requests, "hours" for operating hours or schedule requests, "services" for service-related requests, "packages" for package-related requests)
 
       Focus on identifying the primary service name even if the message includes extra words (e.g., "haircut maybe" should be "haircut") or informal terms (e.g., "cut" should be interpreted as "haircut", "nails" as "manicure"). If unsure, prioritize the most likely service based on context.
 
@@ -492,6 +505,25 @@ async function classifyIntent(message, currentState = {}) {
           info_type: null
         }
       }
+    } else if (currentState.step === 'selectOption') {
+      let infoType = null
+      if (lowerMessage.includes('address')) infoType = 'address'
+      else if (lowerMessage.includes('hours') || lowerMessage.includes('opening') || lowerMessage.includes('operating')) infoType = 'hours'
+      else if (lowerMessage.includes('services') || lowerMessage.includes('offer')) infoType = 'services'
+      else if (lowerMessage.includes('packages') || lowerMessage.includes('package')) infoType = 'packages'
+
+      if (infoType) {
+        return {
+          intent: 'STORE_INFO',
+          details: {
+            store_name: currentState.storeName || null,
+            service_name: null,
+            date: null,
+            time: null,
+            info_type: infoType
+          }
+        }
+      }
     } else if (currentState.step === 'book_appointment_service' && (lowerMessage.includes('haircut') || lowerMessage.includes('manicure') || lowerMessage.includes('cut') || lowerMessage.includes('nails'))) {
       return {
         intent: 'BOOK_APPOINTMENT',
@@ -541,6 +573,7 @@ async function classifyIntent(message, currentState = {}) {
       if (lowerMessage.includes('hours') || lowerMessage.includes('schedule')) infoType = 'hours'
       else if (lowerMessage.includes('address')) infoType = 'address'
       else if (lowerMessage.includes('services') || lowerMessage.includes('offer')) infoType = 'services'
+      else if (lowerMessage.includes('packages') || lowerMessage.includes('package')) infoType = 'packages'
 
       return {
         intent: 'STORE_INFO',
@@ -682,6 +715,10 @@ app.post('/twilio-webhook', async (req, res) => {
 
     let responseMessage
     let name = clientData ? (clientData.preferred_name || clientData.client_name || 'there') : 'there'
+    // Use ProfileName from Twilio if available and clientData is not set
+    if (!clientData && req.body.ProfileName) {
+      name = req.body.ProfileName
+    }
 
     // Get current state before intent classification
     let currentState = conversationState.get(from) || {}
@@ -711,9 +748,10 @@ app.post('/twilio-webhook', async (req, res) => {
         const { storeId, storeName } = state
         const { store, services, packages } = await fetchStoreInfo(storeId)
 
-        if (reply === '1') {
+        if (reply === '1' || details.info_type === 'address') {
           responseMessage = `the address for ${storeName} is ${store.store_addressL1}`
-        } else if (reply === '2') {
+          conversationState.delete(from)
+        } else if (reply === '2' || details.info_type === 'hours') {
           const hours = store.store_operating_hours
           const formattedHours = Object.entries(hours)
             .map(([day, info]) => {
@@ -722,20 +760,22 @@ app.post('/twilio-webhook', async (req, res) => {
             })
             .join('\n')
           responseMessage = `here are the operating hours for ${storeName}\n${formattedHours}`
-        } else if (reply === '3') {
+          conversationState.delete(from)
+        } else if (reply === '3' || details.info_type === 'services') {
           const serviceList = services.map(s => `${s.service_name} $${s.price} ${s.service_duration} mins`).join('\n')
           responseMessage = `these are the services at ${storeName}\n${serviceList}`
-        } else if (reply === '4') {
+          conversationState.delete(from)
+        } else if (reply === '4' || details.info_type === 'packages') {
           const packageList = packages.map(p => {
             const startDate = new Date(p.package_start).toLocaleDateString()
             const endDate = new Date(p.package_end).toLocaleDateString()
             return `${p.package_name} $${p.package_price} ${p.num_sessions} sessions ${p.num_credits} credits valid ${startDate} to ${endDate} ${p.package_description}`
           }).join('\n')
           responseMessage = `here are the packages at ${storeName}\n${packageList}`
+          conversationState.delete(from)
         } else {
           responseMessage = `please pick an option\n1 store address\n2 operating hours\n3 services\n4 packages`
         }
-        conversationState.delete(from)
       } else if (state.step === 'book_appointment') {
         if (!state.storeName) {
           if (details.store_name) {
@@ -1055,7 +1095,39 @@ app.post('/twilio-webhook', async (req, res) => {
               state.storeId = storeRecord.store_id
               state.step = 'selectOption'
               conversationState.set(from, state)
-              responseMessage = `I found ${state.storeName} what would you like to know about it\n1 store address\n2 operating hours\n3 services\n4 packages`
+              // If the user already specified an info_type (e.g., "services"), use it directly
+              if (details.info_type === 'address') {
+                const { store } = await fetchStoreInfo(state.storeId)
+                responseMessage = `the address for ${state.storeName} is ${store.store_addressL1}`
+                conversationState.delete(from)
+              } else if (details.info_type === 'hours') {
+                const { store } = await fetchStoreInfo(state.storeId)
+                const hours = store.store_operating_hours
+                const formattedHours = Object.entries(hours)
+                  .map(([day, info]) => {
+                    if (info.isClosed) return `${day} closed`
+                    return `${day} ${info.open} to ${info.close}`
+                  })
+                  .join('\n')
+                responseMessage = `here are the operating hours for ${state.storeName}\n${formattedHours}`
+                conversationState.delete(from)
+              } else if (details.info_type === 'services') {
+                const { services } = await fetchStoreInfo(state.storeId)
+                const serviceList = services.map(s => `${s.service_name} $${s.price} ${s.service_duration} mins`).join('\n')
+                responseMessage = `these are the services at ${state.storeName}\n${serviceList}`
+                conversationState.delete(from)
+              } else if (details.info_type === 'packages') {
+                const { packages } = await fetchStoreInfo(state.storeId)
+                const packageList = packages.map(p => {
+                  const startDate = new Date(p.package_start).toLocaleDateString()
+                  const endDate = new Date(p.package_end).toLocaleDateString()
+                  return `${p.package_name} $${p.package_price} ${p.num_sessions} sessions ${p.num_credits} credits valid ${startDate} to ${endDate} ${p.package_description}`
+                }).join('\n')
+                responseMessage = `here are the packages at ${state.storeName}\n${packageList}`
+                conversationState.delete(from)
+              } else {
+                responseMessage = `I found ${state.storeName} what would you like to know about it\n1 store address\n2 operating hours\n3 services\n4 packages`
+              }
             }
           } else {
             responseMessage = `which store would you like more details about maybe Idle or Glamour Salon`
@@ -1287,7 +1359,7 @@ app.post('/twilio-webhook', async (req, res) => {
       }
     }
 
-    const rephrasedMessage = await rephraseWithDeepSeek(responseMessage, name)
+    const rephrasedMessage = await rephraseWithDeepSeek(responseMessage, name, state?.storeName || null)
 
     const result = await twilioClient.messages.create({
       from: process.env.TWILIO_WHATSAPP_NUMBER,
