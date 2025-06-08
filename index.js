@@ -1361,4 +1361,12 @@ app.post('/twilio-webhook', async (req, res) => {
             .order('appt_start', { ascending: false })
             .limit(1)
             .single()
-          if (appt
+          if (apptError || !apptData) {
+            responseMessage = `sorry ${name} I couldn’t find an appointment to cancel would you like to book a new one`
+          } else {
+            await supabase
+              .schema('appointments')
+              .from('appointments')
+              .delete()
+              .eq('appt_id', apptData.appt_id)
+            responseMessage = `sorry to hear that ${name} your ${apptData.service_id} appointment on ${new Date(apptData.appt_start).toLocaleDateString()} at ${new Date(apptData.appt_start).toLocaleTimeString()}
