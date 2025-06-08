@@ -1369,4 +1369,33 @@ app.post('/twilio-webhook', async (req, res) => {
               .from('appointments')
               .delete()
               .eq('appt_id', apptData.appt_id)
-            responseMessage = `sorry to hear that ${name} your ${apptData.service_id} appointment on ${new Date(apptData.appt_start).toLocaleDateString()} at ${new Date(apptData.appt_start).toLocaleTimeString()}
+            responseMessage = `sorry to hear that ${name} your ${apptData.service_id} appointment on ${new Date(apptData.appt_start).toLocaleDateString()} at ${new Date(apptData.appt_start).toLocaleTimeString()} has been canceled`
+          }
+          conversationState.delete(from)
+        }
+      } else if (intent === 'PACKAGE_INQUIRY') {
+        state.step = 'package_inquiry'
+        state.intent = 'PACKAGE_INQUIRY'
+        conversationState.set(from, state)
+        responseMessage = `I’d love to help with your package details ${name} can you please give me your registered phone number like 96460132 so I can look it up`
+      } else if (intent === 'UNKNOWN') {
+        responseMessage = `sorry ${name} I didn’t quite understand that can you try again or let me know how I can assist you`
+        conversationState.delete(from)
+      }
+    }
+
+    console.log('Sending response:', responseMessage)
+    const twiml = new twilio.twiml.MessagingResponse()
+    twiml.message(responseMessage)
+    res.writeHead(200, { 'Content-Type': 'text/xml' })
+    res.end(twiml.toString())
+  } catch (error) {
+    console.error('Error in webhook:', error.message)
+    res.status(500).send('Internal Server Error')
+  }
+})
+
+const port = process.env.PORT || 3000
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`)
+})
