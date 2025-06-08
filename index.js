@@ -741,8 +741,12 @@ app.post('/twilio-webhook', async (req, res) => {
       currentState = { intent }
     }
 
+    // Always store the current state in conversationState to ensure consistency
+    conversationState.set(from, currentState)
+    let state = conversationState.get(from) || {}
+
     if (conversationState.has(from)) {
-      const state = conversationState.get(from)
+      state = conversationState.get(from)
       console.log('Current conversation state:', state)
       if (state.step === 'selectOption') {
         const { storeId, storeName } = state
