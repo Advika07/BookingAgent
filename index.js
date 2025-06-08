@@ -52,12 +52,12 @@ const fetchAppointments = async () => {
       .schema('appointments')
       .from('appointments')
       .select(`
-        appt_id
-        store_id
-        assignment_id
-        client_id
-        service_id
-        appt_start
+        appt_id,
+        store_id,
+        assignment_id,
+        client_id,
+        service_id,
+        appt_start,
         appt_end
       `)
     if (error) throw error
@@ -73,7 +73,7 @@ const fetchAppointments = async () => {
       const { data: globalClient, error: globalError } = await supabase
         .schema('clients')
         .from('global_clients')
-        .select('client_name preferred_name client_ph')
+        .select('client_name, preferred_name, client_ph')
         .eq('global_client_id', clientData.global_client_id)
         .single()
       if (globalError) throw globalError
@@ -92,7 +92,7 @@ const fetchStoreInfo = async (storeId) => {
     const { data: store, error: storeError } = await supabase
       .schema('store_management')
       .from('stores')
-      .select('store_id store_name store_operating_hours store_addressL1')
+      .select('store_id, store_name, store_operating_hours, store_addressL1')
       .eq('store_id', storeId)
       .single()
     if (storeError) throw storeError
@@ -101,7 +101,7 @@ const fetchStoreInfo = async (storeId) => {
     const { data: services, error: servicesError } = await supabase
       .schema('store_management')
       .from('services')
-      .select('service_id service_name service_description price service_duration')
+      .select('service_id, service_name, service_description, price, service_duration')
       .eq('store_id', storeId)
     if (servicesError) throw servicesError
     console.log('Services fetched:', services.length)
@@ -109,7 +109,7 @@ const fetchStoreInfo = async (storeId) => {
     const { data: packages, error: packagesError } = await supabase
       .schema('store_management')
       .from('packages')
-      .select('package_id package_name package_description package_limit package_type num_sessions num_credits package_price services_linked package_start package_end')
+      .select('package_id, package_name, package_description, package_limit, package_type, num_sessions, num_credits, package_price, services_linked, package_start, package_end')
       .eq('store_id', storeId)
     if (packagesError) throw packagesError
     console.log('Packages fetched:', packages.length)
@@ -339,7 +339,7 @@ async function checkAvailabilityAndHours(storeId, apptStart, apptEnd, serviceDur
   const { data: existingAppointments, error } = await supabase
     .schema('appointments')
     .from('appointments')
-    .select('appt_start appt_end')
+    .select('appt_start, appt_end')
     .eq('store_id', storeId)
     .lte('appt_start', apptEnd.toISOString())
     .gte('appt_end', apptStart.toISOString())
@@ -660,7 +660,7 @@ app.post('/twilio-webhook', async (req, res) => {
     const { data: existingClient, error: clientError } = await supabase
       .schema('clients')
       .from('global_clients')
-      .select('client_name preferred_name global_client_id client_ph')
+      .select('client_name, preferred_name, global_client_id, client_ph')
       .eq('client_ph', fromWithoutPrefix)
       .single()
     
@@ -743,7 +743,7 @@ app.post('/twilio-webhook', async (req, res) => {
             const { data: storeRecord, error: storeError } = await supabase
               .schema('store_management')
               .from('stores')
-              .select('store_id store_name')
+              .select('store_id, store_name')
               .ilike('store_name', `%${details.store_name.replace(' salon', '').trim()}%`)
               .single()
             if (storeError || !storeRecord) {
@@ -753,7 +753,7 @@ app.post('/twilio-webhook', async (req, res) => {
               const { data: allStores, error: allStoresError } = await supabase
                 .schema('store_management')
                 .from('stores')
-                .select('store_id store_name')
+                .select('store_id, store_name')
               console.log('All stores in database:', allStores, 'Error:', allStoresError?.message)
               responseMessage = `sorry ${name} I couldn't find a store named ${details.store_name} can you try again`
             } else {
@@ -773,7 +773,7 @@ app.post('/twilio-webhook', async (req, res) => {
           const { data: services } = await supabase
             .schema('store_management')
             .from('services')
-            .select('service_id service_name service_duration')
+            .select('service_id, service_name, service_duration')
             .eq('store_id', state.storeId)
           let serviceMatch = services.find(s => s.service_name.toLowerCase() === details.service_name?.toLowerCase())
           if (!serviceMatch && details.service_name) {
@@ -881,7 +881,7 @@ app.post('/twilio-webhook', async (req, res) => {
               const { data: appointments, error: apptError } = await supabase
                 .schema('appointments')
                 .from('appointments')
-                .select('appt_id appt_start service_id store_id')
+                .select('appt_id, appt_start, service_id, store_id')
                 .eq('client_id', clientId)
               if (apptError) throw apptError
 
@@ -905,7 +905,7 @@ app.post('/twilio-webhook', async (req, res) => {
               const { data: apptData, error: apptError } = await supabase
                 .schema('appointments')
                 .from('appointments')
-                .select('appt_id appt_start appt_end service_id')
+                .select('appt_id, appt_start, appt_end, service_id')
                 .eq('client_id', clientId)
                 .order('appt_start', { ascending: false })
                 .limit(1)
@@ -923,7 +923,7 @@ app.post('/twilio-webhook', async (req, res) => {
               const { data: apptData, error: apptError } = await supabase
                 .schema('appointments')
                 .from('appointments')
-                .select('appt_id appt_start service_id')
+                .select('appt_id, appt_start, service_id')
                 .eq('client_id', clientId)
                 .order('appt_start', { ascending: false })
                 .limit(1)
@@ -944,7 +944,7 @@ app.post('/twilio-webhook', async (req, res) => {
               const { data: apptData, error: apptError } = await supabase
                 .schema('appointments')
                 .from('appointments')
-                .select('appt_id appt_start service_id')
+                .select('appt_id, appt_start, service_id')
                 .eq('client_id', clientId)
                 .order('appt_start', { ascending: false })
                 .limit(1)
@@ -1036,7 +1036,7 @@ app.post('/twilio-webhook', async (req, res) => {
             const { data: storeRecord, error: storeError } = await supabase
               .schema('store_management')
               .from('stores')
-              .select('store_id store_name')
+              .select('store_id, store_name')
               .ilike('store_name', `%${details.store_name.replace(' salon', '').trim()}%`)
               .single()
             if (storeError || !storeRecord) {
@@ -1046,7 +1046,7 @@ app.post('/twilio-webhook', async (req, res) => {
               const { data: allStores, error: allStoresError } = await supabase
                 .schema('store_management')
                 .from('stores')
-                .select('store_id store_name')
+                .select('store_id, store_name')
               console.log('All stores in database:', allStores, 'Error:', allStoresError?.message)
               responseMessage = `sorry ${name} I couldn't find a store named ${details.store_name} can you try again`
             } else {
@@ -1066,7 +1066,7 @@ app.post('/twilio-webhook', async (req, res) => {
         const { data: apptData, error: apptError } = await supabase
           .schema('appointments')
           .from('appointments')
-          .select('appt_id appt_start appt_end service_id')
+          .select('appt_id, appt_start, appt_end, service_id')
           .eq('client_id', clientId)
           .order('appt_start', { ascending: false })
           .limit(1)
@@ -1115,14 +1115,14 @@ app.post('/twilio-webhook', async (req, res) => {
               .schema('clients')
               .from('client_packages')
               .select(`
-                client_package_id
-                store_id
-                package_id
-                global_client_id
-                client_id
-                session_remaining
-                credits_remaining
-                purchase_date
+                client_package_id,
+                store_id,
+                package_id,
+                global_client_id,
+                client_id,
+                session_remaining,
+                credits_remaining,
+                purchase_date,
                 status
               `)
               .eq('global_client_id', globalClient.global_client_id)
@@ -1143,12 +1143,12 @@ app.post('/twilio-webhook', async (req, res) => {
                   .schema('store_management')
                   .from('packages')
                   .select(`
-                    package_name
-                    package_description
-                    num_sessions
-                    num_credits
-                    package_price
-                    package_start
+                    package_name,
+                    package_description,
+                    num_sessions,
+                    num_credits,
+                    package_price,
+                    package_start,
                     package_end
                   `)
                   .eq('package_id', pkg.package_id)
@@ -1188,7 +1188,7 @@ app.post('/twilio-webhook', async (req, res) => {
           const { data: appointments, error: apptError } = await supabase
             .schema('appointments')
             .from('appointments')
-            .select('appt_id appt_start service_id store_id')
+            .select('appt_id, appt_start, service_id, store_id')
             .eq('client_id', clientLink.client_id)
             .gt('appt_start', new Date().toISOString()) // Only future appointments
           if (apptError) throw apptError
@@ -1216,7 +1216,7 @@ app.post('/twilio-webhook', async (req, res) => {
           const { data: apptData, error: apptError } = await supabase
             .schema('appointments')
             .from('appointments')
-            .select('appt_id appt_start service_id')
+            .select('appt_id, appt_start, service_id')
             .eq('client_id', clientLink.client_id)
             .order('appt_start', { ascending: false })
             .limit(1)
@@ -1239,7 +1239,7 @@ app.post('/twilio-webhook', async (req, res) => {
           const { data: apptData, error: apptError } = await supabase
             .schema('appointments')
             .from('appointments')
-            .select('appt_id appt_start service_id')
+            .select('appt_id, appt_start, service_id')
             .eq('client_id', clientLink.client_id)
             .order('appt_start', { ascending: false })
             .limit(1)
@@ -1263,7 +1263,7 @@ app.post('/twilio-webhook', async (req, res) => {
           const { data: apptData, error: apptError } = await supabase
             .schema('appointments')
             .from('appointments')
-            .select('appt_id appt_start service_id')
+            .select('appt_id, appt_start, service_id')
             .eq('client_id', clientLink.client_id)
             .order('appt_start', { ascending: false })
             .limit(1)
