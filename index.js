@@ -239,7 +239,6 @@ async function rephraseWithDeepSeek(message, name, storeName = null) {
       You are a friendly and professional assistant for Glamour Salon rephrase the following message to sound warm natural and human-like while addressing the customer by their name (${name}) keep the tone polite and conversational as if you're speaking directly to the customer do not change the core meaning of the message do not include any explanatory notes brackets emojis or unnecessary punctuation
     `
 
-    // Add storeName to the prompt if provided to ensure correct store reference
     if (storeName) {
       prompt += `
       The message may reference a store. Ensure that any reference to a store uses the name "${storeName}" instead of any other store name like "Glamour Salon" unless explicitly intended.
@@ -263,7 +262,6 @@ async function rephraseWithDeepSeek(message, name, storeName = null) {
     })
 
     let rephrased = completion.choices[0].message.content.trim()
-    // Ensure the name placeholder is correctly replaced
     rephrased = rephrased.replace(/\[Name\]/g, name)
     return rephrased
   } catch (error) {
@@ -322,8 +320,12 @@ async function checkAvailabilityAndHours(storeId, apptStart, apptEnd, serviceDur
   
   const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
   const apptDay = daysOfWeek[apptStart.getDay()]
-  const storeHours = operatingHours[apptDay.toLowerCase()]
+  const storeHours = operatingHours[apptDay] // Fixed: Removed .toLowerCase() to match capitalized keys
   
+  if (!storeHours) {
+    throw new Error(`Operating hours for ${apptDay} not found for store ${storeId}`)
+  }
+
   if (storeHours.isClosed) {
     return {
       isAvailable: false,
@@ -377,8 +379,15 @@ function suggestNextAvailableTime(storeId, requestedTime, serviceDuration, opera
 
   while (attempts < maxAttempts) {
     const apptDay = daysOfWeek[suggestedTime.getDay()]
-    const storeHours = operatingHours[apptDay.toLowerCase()]
+    const storeHours = operatingHours[apptDay] // Fixed: Match capitalized keys
     
+    if (!storeHours) {
+      suggestedTime.setDate(suggestedTime.getDate() + 1)
+      suggestedTime.setHours(0, 0, 0, 0)
+      attempts++
+      continue
+    }
+
     if (!storeHours.isClosed) {
       const [openHour, openMinute] = storeHours.open.split(':').map(Number)
       const [closeHour, closeMinute] = storeHours.close.split(':').map(Number)
@@ -482,7 +491,6 @@ async function classifyIntent(message, currentState = {}) {
     console.error('DeepSeek intent classification error:', error.message)
     const lowerMessage = message.toLowerCase()
 
-    // Fallback logic with context
     if (currentState.step === 'book_appointment' && (lowerMessage.includes('idle') || lowerMessage.includes('glamour'))) {
       return {
         intent: 'BOOK_APPOINTMENT',
@@ -715,19 +723,15 @@ app.post('/twilio-webhook', async (req, res) => {
 
     let responseMessage
     let name = clientData ? (clientData.preferred_name || clientData.client_name || 'there') : 'there'
-    // Use ProfileName from Twilio if available and clientData is not set
     if (!clientData && req.body.ProfileName) {
       name = req.body.ProfileName
     }
 
-    // Get current state before intent classification
     let currentState = conversationState.get(from) || {}
     console.log('Current state before intent classification:', currentState)
 
-    // Classify intent with current state context
     const { intent, details } = await classifyIntent(reply, currentState)
 
-    // Reset state only if intent changes to a new top-level intent
     console.log('Detected intent:', intent)
     if (conversationState.has(from) && ['GREETING', 'BOOK_APPOINTMENT', 'VIEW_APPOINTMENTS', 'CHANGE_APPOINTMENT', 'STORE_INFO', 'PACKAGE_INQUIRY'].includes(intent)) {
       if (currentState.intent !== intent) {
@@ -741,12 +745,10 @@ app.post('/twilio-webhook', async (req, res) => {
       currentState = { intent }
     }
 
-    // Always store the current state in conversationState to ensure consistency
     conversationState.set(from, currentState)
     let state = conversationState.get(from) || {}
     console.log('Current conversation state after intent classification:', state)
 
-    // Handle responses based on the current step in the conversation
     if (state.step === 'selectOption') {
       const { storeId, storeName } = state
       const { store, services, packages } = await fetchStoreInfo(storeId)
@@ -874,11 +876,12 @@ app.post('/twilio-webhook', async (req, res) => {
       }
     } else if (state.step === 'book_appointment_service') {
       if (!state.serviceName) {
-        const { data: services } = await supabase
+        const { data: services, error: servicesError } = await supabase
           .schema('store_management')
           .from('services')
           .select('service_id, service_name, service_duration')
           .eq('store_id', state.storeId)
+        if (servicesError) throw servicesError
         let serviceMatch = services.find(s => s.service_name.toLowerCase() === details.service_name?.toLowerCase())
         if (!serviceMatch && details.service_name) {
           const lowerServiceName = details.service_name.toLowerCase()
@@ -892,7 +895,7 @@ app.post('/twilio-webhook', async (req, res) => {
         }
         if (serviceMatch) {
           state.serviceName = serviceMatch.service_name
-          state.serviceId = serviceMatch.service_id
+          state.serviceId = serviceMatch.service_id // Fixed: Ensure correct service_id from services table
           state.serviceDuration = serviceMatch.service_duration
           state.step = 'book_appointment_datetime'
           conversationState.set(from, state)
@@ -1246,7 +1249,6 @@ app.post('/twilio-webhook', async (req, res) => {
         }
       }
     } else {
-      // Handle new intents when no specific step is set
       if (intent === 'GREETING') {
         responseMessage = `hello ${name} how can I assist you today you can book an appointment change an appointment get store info or check your package details just let me know what you'd like`
         conversationState.set(from, { intent: 'GREETING' })
@@ -1268,7 +1270,7 @@ app.post('/twilio-webhook', async (req, res) => {
             .from('appointments')
             .select('appt_id, appt_start, service_id, store_id')
             .eq('client_id', clientLink.client_id)
-            .gt('appt_start', new Date().toISOString()) // Only future appointments
+            .gt('appt_start', new Date().toISOString())
           if (apptError) throw apptError
 
           if (!appointments || appointments.length === 0) {
