@@ -307,7 +307,6 @@ function parseDateTime(dateStr, timeStr) {
     }
   }
   if (dateTime && !isNaN(dateTime.getTime())) {
-    dateTime.setMinutes(dateTime.getMinutes() + dateTime.getTimezoneOffset() + 480)
     return dateTime
   }
   return null
@@ -320,7 +319,7 @@ async function checkAvailabilityAndHours(storeId, apptStart, apptEnd, serviceDur
   
   const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
   const apptDay = daysOfWeek[apptStart.getDay()]
-  const storeHours = operatingHours[apptDay] // Fixed: Removed .toLowerCase() to match capitalized keys
+  const storeHours = operatingHours[apptDay]
   
   if (!storeHours) {
     throw new Error(`Operating hours for ${apptDay} not found for store ${storeId}`)
@@ -379,7 +378,7 @@ function suggestNextAvailableTime(storeId, requestedTime, serviceDuration, opera
 
   while (attempts < maxAttempts) {
     const apptDay = daysOfWeek[suggestedTime.getDay()]
-    const storeHours = operatingHours[apptDay] // Fixed: Match capitalized keys
+    const storeHours = operatingHours[apptDay]
     
     if (!storeHours) {
       suggestedTime.setDate(suggestedTime.getDate() + 1)
@@ -685,6 +684,58 @@ async function classifyIntent(message, currentState = {}) {
   }
 }
 
+async function extractNameAndNumber(message) {
+  try {
+    console.log('Extracting name and number from message:', message)
+    const prompt = `
+      You are a helpful assistant for Glamour Salon. Analyze the customer's message and extract the name and phone number. The message may contain a name and a phone number in various formats, such as:
+      - "Name Number" (e.g., "John 96460132")
+      - "Number Name" (e.g., "96460132 John")
+      - "Name, Number" (e.g., "John, 96460132")
+      - "My name is Name and my number is Number" (e.g., "My name is John and my number is 96460132")
+      - "Number is my number and I'm Name" (e.g., "96460132 is my number and I'm John")
+      
+      The name will typically be a string of alphabetic characters (e.g., "John", "Advika"), and the phone number will be a sequence of digits, possibly starting with a country code like +65 (e.g., "96460132", "+6596460132").
+
+      Customer message: "${message}"
+
+      Respond in JSON format:
+      {
+        "name": "EXTRACTED_NAME or null",
+        "phoneNumber": "EXTRACTED_PHONE_NUMBER or null"
+      }
+    `
+
+    const completion = await openai.chat.completions.create({
+      model: 'deepseek-chat',
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant for Glamour Salon specializing in extracting customer names and phone numbers from natural language with a focus on flexible format recognition' },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.5,
+      max_tokens: 100,
+    })
+
+    let responseContent = completion.choices[0].message.content.trim()
+    if (responseContent.startsWith('```json')) {
+      responseContent = responseContent.replace(/^```json\n/, '').replace(/\n```$/, '')
+    }
+
+    const result = JSON.parse(responseContent)
+    console.log('Extracted name and number:', result)
+
+    // Normalize phone number by removing country code if present
+    if (result.phoneNumber) {
+      result.phoneNumber = result.phoneNumber.replace(/^\+65/, '')
+    }
+
+    return result
+  } catch (error) {
+    console.error('DeepSeek name and number extraction error:', error.message)
+    return { name: null, phoneNumber: null }
+  }
+}
+
 app.post('/twilio-webhook', async (req, res) => {
   console.log('Webhook received:', req.body)
   const reply = req.body.Body
@@ -895,7 +946,7 @@ app.post('/twilio-webhook', async (req, res) => {
         }
         if (serviceMatch) {
           state.serviceName = serviceMatch.service_name
-          state.serviceId = serviceMatch.service_id // Fixed: Ensure correct service_id from services table
+          state.serviceId = serviceMatch.service_id
           state.serviceDuration = serviceMatch.service_duration
           state.step = 'book_appointment_datetime'
           conversationState.set(from, state)
@@ -976,10 +1027,8 @@ app.post('/twilio-webhook', async (req, res) => {
         }
       }
     } else if (state.step === 'collect_client_details') {
-      const nameMatch = reply.match(/([a-zA-Z\s]+),\s*(\d+)/)
-      if (nameMatch) {
-        const clientName = nameMatch[1].trim()
-        const phoneNumber = nameMatch[2].trim()
+      const { name: clientName, phoneNumber } = await extractNameAndNumber(reply)
+      if (clientName && phoneNumber) {
         if (phoneNumber !== fromWithoutPrefix) {
           responseMessage = `the phone number you gave ${phoneNumber} doesn’t match the one you’re messaging from ${fromWithoutPrefix} please use the same number or let me know if this is on purpose`
         } else {
@@ -1380,24 +1429,33 @@ app.post('/twilio-webhook', async (req, res) => {
         state.intent = 'PACKAGE_INQUIRY'
         conversationState.set(from, state)
         responseMessage = `I’d love to help with your package details ${name} can you please give me your registered phone number like 96460132 so I can look it up`
-      } else if (intent === 'UNKNOWN') {
-        responseMessage = `sorry ${name} I didn’t quite understand that can you try again or let me know how I can assist you`
-        conversationState.delete(from)
+      } else {
+        responseMessage = `hi ${name} I’m here to help you can book an appointment change an appointment get store info or check your package details just let me know what you’d like`
+        conversationState.set(from, { intent: 'UNKNOWN' })
       }
     }
 
+    responseMessage = await rephraseWithDeepSeek(responseMessage, name, state.storeName)
     console.log('Sending response:', responseMessage)
-    const twiml = new twilio.twiml.MessagingResponse()
-    twiml.message(responseMessage)
-    res.writeHead(200, { 'Content-Type': 'text/xml' })
-    res.end(twiml.toString())
+
+    await twilioClient.messages.create({
+      from: process.env.TWILIO_WHATSAPP_NUMBER,
+      to: req.body.From,
+      body: responseMessage
+    })
+
+    res.status(200).send('Message processed')
   } catch (error) {
-    console.error('Error in webhook:', error.message)
-    res.status(500).send('Internal Server Error')
+    console.error('Error processing message:', error.message)
+    res.status(500).send('Error processing message')
   }
 })
 
-const port = process.env.PORT || 3000
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`)
+const PORT = process.env.PORT || 3000
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`)
 })
+
+setInterval(() => {
+  sendReminders().catch(error => console.error('Error in scheduled reminders:', error.message))
+}, 24 * 60 * 60 * 1000)
