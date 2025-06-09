@@ -433,6 +433,7 @@ async function classifyIntent(message, currentState = {}) {
       - CONFIRM_APPOINTMENT (e.g., "YES", "yes", "confirm", "i confirm")
       - CANCEL_APPOINTMENT (e.g., "NO", "no", "cancel", "i want to cancel")
       - PACKAGE_INQUIRY (e.g., "can you tell me about my package", "is my package still active", "how many sessions are left", "package details", "what's my package status")
+      - PROVIDE_PHONE_NUMBER (e.g., "96460132", "6596460132" when the state step is 'package_inquiry' and phoneNumberRequested is true)
       - REGISTER_CONFIRM (e.g., "YES", "yes", "sure", "okay" for confirming registration)
       - REGISTER_DECLINE (e.g., "NO", "no", "not now" for declining registration)
       - UNKNOWN (if the intent doesn't match any of the above)
@@ -443,6 +444,7 @@ async function classifyIntent(message, currentState = {}) {
       - If the current state has step 'book_appointment_service' and the message contains a service name (e.g., "haircut", "manicure"), classify the intent as BOOK_APPOINTMENT and extract the service_name.
       - If the current state has step 'book_appointment_datetime' and the message contains a date or time (e.g., "tomorrow at 2 PM"), classify the intent as BOOK_APPOINTMENT and extract the date and time.
       - If the current state has step 'selectOption' and the message contains keywords like "address", "hours", "services", or "packages", classify the intent as STORE_INFO and set the info_type accordingly.
+      - If the current state has step 'package_inquiry' and phoneNumberRequested is true, and the message is a sequence of digits (e.g., "96460132", "6596460132"), classify the intent as PROVIDE_PHONE_NUMBER and extract the phone_number.
 
       Additionally extract any relevant details such as:
       - store_name (e.g., "Idle", "Glamour Salon", "Idle salon")
@@ -450,6 +452,7 @@ async function classifyIntent(message, currentState = {}) {
       - date (e.g., "26/05/2025", "tomorrow", "next Friday", "this Friday")
       - time (e.g., "14:00", "2 PM", "12:34 AM", "noon", "10 am")
       - info_type (for STORE_INFO intent: "address" for address-related requests, "hours" for operating hours or schedule requests, "services" for service-related requests, "packages" for package-related requests)
+      - phone_number (for PROVIDE_PHONE_NUMBER intent: the phone number provided, e.g., "96460132")
 
       Focus on identifying the primary service name even if the message includes extra words (e.g., "haircut maybe" should be "haircut") or informal terms (e.g., "cut" should be interpreted as "haircut", "nails" as "manicure"). If unsure, prioritize the most likely service based on context.
 
@@ -463,7 +466,8 @@ async function classifyIntent(message, currentState = {}) {
           "service_name": "SERVICE_NAME or null",
           "date": "DATE or null",
           "time": "TIME or null",
-          "info_type": "INFO_TYPE or null"
+          "info_type": "INFO_TYPE or null",
+          "phone_number": "PHONE_NUMBER or null"
         }
       }
     `
@@ -498,7 +502,8 @@ async function classifyIntent(message, currentState = {}) {
           service_name: null,
           date: null,
           time: null,
-          info_type: null
+          info_type: null,
+          phone_number: null
         }
       }
     } else if (currentState.step === 'store_info' && (lowerMessage.includes('idle') || lowerMessage.includes('glamour'))) {
@@ -509,7 +514,8 @@ async function classifyIntent(message, currentState = {}) {
           service_name: null,
           date: null,
           time: null,
-          info_type: null
+          info_type: null,
+          phone_number: null
         }
       }
     } else if (currentState.step === 'selectOption') {
@@ -527,7 +533,8 @@ async function classifyIntent(message, currentState = {}) {
             service_name: null,
             date: null,
             time: null,
-            info_type: infoType
+            info_type: infoType,
+            phone_number: null
           }
         }
       }
@@ -539,7 +546,8 @@ async function classifyIntent(message, currentState = {}) {
           service_name: lowerMessage.includes('haircut') || lowerMessage.includes('cut') ? 'haircut' : 'manicure',
           date: null,
           time: null,
-          info_type: null
+          info_type: null,
+          phone_number: null
         }
       }
     } else if (currentState.step === 'book_appointment_datetime' && (lowerMessage.includes('tomorrow') || lowerMessage.includes('friday') || lowerMessage.match(/\d{1,2}(?::\d{2})?\s*(am|pm)/i))) {
@@ -550,7 +558,20 @@ async function classifyIntent(message, currentState = {}) {
           service_name: null,
           date: lowerMessage.includes('tomorrow') ? 'tomorrow' : (lowerMessage.includes('friday') ? 'Friday' : null),
           time: lowerMessage.match(/\d{1,2}(?::\d{2})?\s*(am|pm)/i)?.[0] || null,
-          info_type: null
+          info_type: null,
+          phone_number: null
+        }
+      }
+    } else if (currentState.step === 'package_inquiry' && currentState.phoneNumberRequested && message.match(/^\d+$/)) {
+      return {
+        intent: 'PROVIDE_PHONE_NUMBER',
+        details: {
+          store_name: null,
+          service_name: null,
+          date: null,
+          time: null,
+          info_type: null,
+          phone_number: message
         }
       }
     } else if (lowerMessage.includes('book') || lowerMessage.includes('appointment') || lowerMessage.includes('schedule') || lowerMessage.includes('service') || lowerMessage.includes('make a booking')) {
@@ -561,7 +582,8 @@ async function classifyIntent(message, currentState = {}) {
           service_name: null,
           date: null,
           time: null,
-          info_type: null
+          info_type: null,
+          phone_number: null
         }
       }
     } else if (lowerMessage.includes('change') || lowerMessage.includes('reschedule') || lowerMessage.includes('modify') || lowerMessage.includes('move my appointment')) {
@@ -572,7 +594,8 @@ async function classifyIntent(message, currentState = {}) {
           service_name: null,
           date: null,
           time: null,
-          info_type: null
+          info_type: null,
+          phone_number: null
         }
       }
     } else if (lowerMessage.includes('details') || lowerMessage.includes('info') || lowerMessage.includes('hours') || lowerMessage.includes('address') || lowerMessage.includes('services') || lowerMessage.includes('what do you offer') || lowerMessage.includes('store details')) {
@@ -589,7 +612,8 @@ async function classifyIntent(message, currentState = {}) {
           service_name: null,
           date: null,
           time: null,
-          info_type: infoType
+          info_type: infoType,
+          phone_number: null
         }
       }
     } else if (lowerMessage.includes('upcoming') || lowerMessage.includes('appointments') || lowerMessage.includes('bookings') || lowerMessage.includes('my schedule') || lowerMessage.includes('what appointments do i have') || lowerMessage.includes('i want to see upcoming appointments')) {
@@ -600,7 +624,8 @@ async function classifyIntent(message, currentState = {}) {
           service_name: null,
           date: null,
           time: null,
-          info_type: null
+          info_type: null,
+          phone_number: null
         }
       }
     } else if (lowerMessage.toUpperCase() === 'YES' || lowerMessage.toLowerCase() === 'yes' || lowerMessage.toLowerCase() === 'confirm' || lowerMessage.toLowerCase() === 'i confirm') {
@@ -611,7 +636,8 @@ async function classifyIntent(message, currentState = {}) {
           service_name: null,
           date: null,
           time: null,
-          info_type: null
+          info_type: null,
+          phone_number: null
         }
       }
     } else if (lowerMessage.toUpperCase() === 'NO' || lowerMessage.toLowerCase() === 'no' || lowerMessage.toLowerCase() === 'cancel' || lowerMessage.toLowerCase() === 'i want to cancel') {
@@ -622,7 +648,8 @@ async function classifyIntent(message, currentState = {}) {
           service_name: null,
           date: null,
           time: null,
-          info_type: null
+          info_type: null,
+          phone_number: null
         }
       }
     } else if (lowerMessage.includes('hello') || lowerMessage.includes('hi') || lowerMessage.includes('hey') || lowerMessage.includes('good morning') || lowerMessage.includes('good afternoon')) {
@@ -633,7 +660,8 @@ async function classifyIntent(message, currentState = {}) {
           service_name: null,
           date: null,
           time: null,
-          info_type: null
+          info_type: null,
+          phone_number: null
         }
       }
     } else if (lowerMessage.includes('package') || lowerMessage.includes('session') || lowerMessage.includes('credit') || lowerMessage.includes('active') || lowerMessage.includes('package status')) {
@@ -644,7 +672,8 @@ async function classifyIntent(message, currentState = {}) {
           service_name: null,
           date: null,
           time: null,
-          info_type: null
+          info_type: null,
+          phone_number: null
         }
       }
     } else if (lowerMessage.toUpperCase() === 'YES' || lowerMessage.toLowerCase() === 'yes' || lowerMessage.toLowerCase() === 'sure' || lowerMessage.toLowerCase() === 'okay') {
@@ -655,7 +684,8 @@ async function classifyIntent(message, currentState = {}) {
           service_name: null,
           date: null,
           time: null,
-          info_type: null
+          info_type: null,
+          phone_number: null
         }
       }
     } else if (lowerMessage.toUpperCase() === 'NO' || lowerMessage.toLowerCase() === 'no' || lowerMessage.toLowerCase() === 'not now') {
@@ -666,7 +696,8 @@ async function classifyIntent(message, currentState = {}) {
           service_name: null,
           date: null,
           time: null,
-          info_type: null
+          info_type: null,
+          phone_number: null
         }
       }
     }
@@ -678,7 +709,8 @@ async function classifyIntent(message, currentState = {}) {
         service_name: null,
         date: null,
         time: null,
-        info_type: null
+        info_type: null,
+        phone_number: null
       }
     }
   }
@@ -1223,8 +1255,8 @@ app.post('/twilio-webhook', async (req, res) => {
         state.phoneNumberRequested = true
         conversationState.set(from, state)
         responseMessage = `I’d love to help with your package details ${name} can you please give me your registered phone number like 96460132 so I can look it up`
-      } else {
-        const phoneNumber = reply
+      } else if (intent === 'PROVIDE_PHONE_NUMBER') {
+        const phoneNumber = details.phone_number
         const { data: globalClient, error: globalError } = await supabase
           .schema('clients')
           .from('global_clients')
@@ -1296,6 +1328,8 @@ app.post('/twilio-webhook', async (req, res) => {
             conversationState.delete(from)
           }
         }
+      } else {
+        responseMessage = `I’d love to help with your package details ${name} can you please give me your registered phone number like 96460132 so I can look it up`
       }
     } else {
       if (intent === 'GREETING') {
@@ -1349,13 +1383,14 @@ app.post('/twilio-webhook', async (req, res) => {
           const { data: apptData, error: apptError } = await supabase
             .schema('appointments')
             .from('appointments')
-            .select('appt_id, appt_start, service_id')
+            .select('appt_id, appt_start, appt_end, service_id')
             .eq('client_id', clientLink.client_id)
             .order('appt_start', { ascending: false })
             .limit(1)
             .single()
           if (apptError || !apptData) {
             responseMessage = `sorry ${name} I couldn’t find an appointment to change would you like to book a new one instead`
+            conversationState.delete(from)
           } else {
             state.step = 'change_appointment'
             state.intent = 'CHANGE_APPOINTMENT'
@@ -1363,11 +1398,6 @@ app.post('/twilio-webhook', async (req, res) => {
             responseMessage = `let’s reschedule your ${apptData.service_id} appointment ${name} when would you like it just say something like tomorrow at 2 PM or this Friday at 10 am`
           }
         }
-      } else if (intent === 'STORE_INFO') {
-        state.step = 'store_info'
-        state.intent = 'STORE_INFO'
-        conversationState.set(from, state)
-        responseMessage = `I’d be happy to help with that ${name} which store would you like more details about maybe Idle or Glamour Salon`
       } else if (intent === 'CONFIRM_APPOINTMENT') {
         if (!clientData) {
           state.step = 'collect_client_details'
@@ -1386,6 +1416,7 @@ app.post('/twilio-webhook', async (req, res) => {
             .single()
           if (apptError || !apptData) {
             responseMessage = `sorry ${name} I couldn’t find an appointment to confirm would you like to book a new one`
+            conversationState.delete(from)
           } else {
             await supabase
               .schema('appointments')
@@ -1393,8 +1424,8 @@ app.post('/twilio-webhook', async (req, res) => {
               .update({ status: 'confirmed' })
               .eq('appt_id', apptData.appt_id)
             responseMessage = `thanks ${name} your ${apptData.service_id} appointment on ${new Date(apptData.appt_start).toLocaleDateString()} at ${new Date(apptData.appt_start).toLocaleTimeString()} is confirmed`
+            conversationState.delete(from)
           }
-          conversationState.delete(from)
         }
       } else if (intent === 'CANCEL_APPOINTMENT') {
         if (!clientData) {
@@ -1414,6 +1445,7 @@ app.post('/twilio-webhook', async (req, res) => {
             .single()
           if (apptError || !apptData) {
             responseMessage = `sorry ${name} I couldn’t find an appointment to cancel would you like to book a new one`
+            conversationState.delete(from)
           } else {
             await supabase
               .schema('appointments')
@@ -1421,41 +1453,44 @@ app.post('/twilio-webhook', async (req, res) => {
               .delete()
               .eq('appt_id', apptData.appt_id)
             responseMessage = `sorry to hear that ${name} your ${apptData.service_id} appointment on ${new Date(apptData.appt_start).toLocaleDateString()} at ${new Date(apptData.appt_start).toLocaleTimeString()} has been canceled`
+            conversationState.delete(from)
           }
-          conversationState.delete(from)
         }
+      } else if (intent === 'STORE_INFO') {
+        state.step = 'store_info'
+        state.intent = 'STORE_INFO'
+        if (details.store_name) state.storeName = details.store_name
+        if (details.info_type) state.info_type = details.info_type
+        conversationState.set(from, state)
+        responseMessage = `I’d be happy to help with that ${name} which store would you like more details about maybe Idle or Glamour Salon`
       } else if (intent === 'PACKAGE_INQUIRY') {
         state.step = 'package_inquiry'
         state.intent = 'PACKAGE_INQUIRY'
+        state.phoneNumberRequested = false
         conversationState.set(from, state)
         responseMessage = `I’d love to help with your package details ${name} can you please give me your registered phone number like 96460132 so I can look it up`
       } else {
-        responseMessage = `hi ${name} I’m here to help you can book an appointment change an appointment get store info or check your package details just let me know what you’d like`
-        conversationState.set(from, { intent: 'UNKNOWN' })
+        responseMessage = `sorry ${name} I’m not sure what you meant you can book an appointment change an appointment get store info or check your package details just let me know how I can help`
+        conversationState.delete(from)
       }
     }
 
-    responseMessage = await rephraseWithDeepSeek(responseMessage, name, state.storeName)
-    console.log('Sending response:', responseMessage)
+    const rephrasedMessage = await rephraseWithDeepSeek(responseMessage, name, state.storeName)
+    console.log('Sending response:', rephrasedMessage)
 
-    await twilioClient.messages.create({
-      from: process.env.TWILIO_WHATSAPP_NUMBER,
-      to: req.body.From,
-      body: responseMessage
-    })
-
-    res.status(200).send('Message processed')
+    const twiml = new twilio.twiml.MessagingResponse()
+    twiml.message(rephrasedMessage)
+    res.set('Content-Type', 'text/xml')
+    res.send(twiml.toString())
   } catch (error) {
-    console.error('Error processing message:', error.message)
-    res.status(500).send('Error processing message')
+    console.error('Error processing webhook:', error.message)
+    const twiml = new twilio.twiml.MessagingResponse()
+    twiml.message(`sorry I ran into an issue please try again or contact support`)
+    res.set('Content-Type', 'text/xml')
+    res.send(twiml.toString())
   }
 })
 
-const PORT = process.env.PORT || 3000
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`)
+app.listen(3000, () => {
+  console.log('Server running on port 3000')
 })
-
-setInterval(() => {
-  sendReminders().catch(error => console.error('Error in scheduled reminders:', error.message))
-}, 24 * 60 * 60 * 1000)
