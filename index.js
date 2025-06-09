@@ -140,7 +140,7 @@ const createClientRecord = async (phoneNumber, name) => {
       .from('clients')
       .insert({
         global_client_id: globalClient.global_client_id,
-        store_id: null
+        store_id: 'b32e113a-0bdc-46ee-95ab-f7260abda24e' // Hardcoded store_id
       })
       .select('client_id')
       .single()
